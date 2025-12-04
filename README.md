@@ -27,8 +27,8 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/your-username/retirement-simulator.git](https://github.com/your-username/retirement-simulator.git)
-    cd retirement-simulator
+    git clone [https://github.com/rflamino/monte_carlo_retirement.git](https://github.com/rflamino/monte_carlo_retirement.git)
+    cd monte_carlo_retirement
     ```
 
 2.  **Install dependencies:**
