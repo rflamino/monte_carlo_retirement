@@ -1,0 +1,51 @@
+{
+  "scenario": "Conservative Plan",
+  "initial_balance": 300000.0,
+  "monthly_contribution": 5000.0,
+  "contribution_growth_rate_annual": 0.03,
+  "monthly_expenses": 5000.0,
+  "retirement_years": 50,
+
+  "allocation_inv1_pct": 0.50,
+  "inv1_returns_mean": 0.10,
+  "inv1_returns_volatility": 0.15,
+  "inv1_annual_tax_on_gains_rate": 0.0,
+  "inv1_realized_gains_tax_rate": 0.15,
+  "inv1_use_realized_gains_tax_system": true,
+
+  "inv2_premium_over_inflation_mean": 0.04,
+  "inv2_premium_over_inflation_volatility": 0.05,
+  "inv2_annual_tax_on_gains_rate": 0.15,
+  "inv2_realized_gains_tax_rate": 0.0,
+  "inv2_use_realized_gains_tax_system": false,
+
+  "inflation_rate_mean": 0.045,
+  "inflation_rate_volatility": 0.015,
+
+  "num_simulations_main": 20000,
+  "num_simulations_search": 3000,
+  "target_probability": 95.0,
+  "starting_working_months_search": 0,
+  "seed": null,
+  "num_processes": 6,
+
+  "other_income_streams": [
+    {
+      "name": "Social Security",
+      "monthly_amount_today": 4500.0,
+      "start_after_retirement_years": 10,
+      "duration_years": null,
+      "inflation_indexed": true,
+      "tax_rate": 0.15
+    },
+    {
+      "name": "Apartment rental",
+      "monthly_amount_today": 1000.0,
+      "start_after_retirement_years": 0,
+      "duration_years": null,
+      "inflation_indexed": true,
+      "tax_rate": 0.10
+    }	
+	
+  ]
+}
