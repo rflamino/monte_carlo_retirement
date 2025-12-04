@@ -44,6 +44,7 @@ By default, the script looks for a file named `monte_carlo_retirement.json` in t
 
 ```bash
 python monte_carlo_retirement.py
+```
 
 ## 2. Custom Configuration
 
