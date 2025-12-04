@@ -16,9 +16,13 @@ from typing import Dict, Any, Tuple, Optional, List, Union
 import os
 import json 
 import sys  
+import warnings
+
 
 # Pydantic for configuration validation and data management
 from pydantic import BaseModel, Field, field_validator, ValidationInfo
+
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 # --- CONSTANTS ---
 MONTHS_PER_YEAR: int = 12
@@ -76,7 +80,7 @@ class Config(BaseModel):
     other_income_streams: List[OtherIncomeStreamConfig] = Field([])
 
     model_config = {
-        "allow_population_by_field_name": True,
+        "validate_by_name": True,
         "validate_assignment": True
     }
 

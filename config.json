@@ -24,7 +24,7 @@
 
         "num_simulations_main": 30000,
         "num_simulations_search": 3000, 
-        "target_probability": 99.0, 
+        "target_probability": 96.0, 
         "starting_working_months_search": 0, 
         "seed": null,
         "num_processes": 6,
