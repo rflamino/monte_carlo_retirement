@@ -40,7 +40,7 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
 ## 💻 Usage
 
 ### 1. Default Execution
-By default, the script looks for a file named `config.json` in the same directory.
+By default, the script looks for a file named `monte_carlo_retirement.json` in the same directory.
 
 ```bash
 python monte_carlo_retirement.py
