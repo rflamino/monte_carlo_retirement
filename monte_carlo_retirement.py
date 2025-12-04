@@ -1,3 +1,7 @@
+# monte_carlo_retirement - Retirement Monte Carlo Simulator
+# Author: Reinaldo S. Flamino
+# Description: A robust Python-based Monte Carlo simulation tool designed to project portfolio longevity in retirement.
+
 import numpy as np
 import pandas as pd
 import matplotlib
