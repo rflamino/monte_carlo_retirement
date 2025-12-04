@@ -959,7 +959,7 @@ def main():
     if len(sys.argv) > 1:
         json_filename = sys.argv[1]
     else:
-        json_filename = "monte_carlo_retirement.json"
+        json_filename = "config.json"
         logger.info(f"No config file specified via argument. Defaulting to '{json_filename}'")
 
     logger.info(f"Loading configuration from: {json_filename}")
