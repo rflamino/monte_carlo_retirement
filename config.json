@@ -22,12 +22,12 @@
         "inflation_rate_mean": 0.062, 
         "inflation_rate_volatility": 0.0235, 
 
-        "num_simulations_main": 30000,
-        "num_simulations_search": 3000, 
-        "target_probability": 94.0, 
+        "num_simulations_main": 3000,
+        "num_simulations_search": 300, 
+        "target_probability": 97.0, 
         "starting_working_months_search": 0, 
         "seed": null,
-        "num_processes": 6,
+        "num_processes": 8,
 
         "other_income_streams": [
             {
