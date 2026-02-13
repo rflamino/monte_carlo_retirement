@@ -1,10 +1,11 @@
 [project]
-name = "temp"
+name = "monte_carlo_retirement"
 version = "0.1.0"
-description = "Add your description here"
+description = "Monte Carlo simulation tool designed to project portfolio longevity in retirement."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "loguru>=0.7.3",
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
     "pandas>=3.0.0",

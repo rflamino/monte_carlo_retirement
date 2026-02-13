@@ -1064,7 +1064,7 @@ def main():
     
     # Configure loguru
     logger.remove() # Remove default handler
-    logger.add(sys.stderr, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO")
+    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", level="INFO", colorize=True)
     logger.add(log_filename, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO", rotation="10 MB")
     
     logger.info(f"Logging initialized. Log file: {log_filename}")
