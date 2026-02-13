@@ -21,6 +21,18 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
     * `pandas`
     * `matplotlib`
     * `pydantic`
+    * `loguru`
+
+## Project Structure
+
+The project is modularized into the following components:
+
+*   `main.py`: Entry point for the application.
+*   `config.py`: Configuration loading and validation.
+*   `simulation.py`: Core Monte Carlo simulation logic.
+*   `plotting.py`: Visualization generation.
+*   `utils.py`: Utility functions (logging, seeding).
+*   `constants.py`: Project constants.
 
 ## Installation
 
@@ -42,7 +54,7 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
 By default, the script looks for a file named `monte_carlo_retirement.json` in the same directory.
 
 ```bash
-python monte_carlo_retirement.py
+uv run python main.py
 ```
 
 ## 2. Custom Configuration
@@ -50,7 +62,7 @@ python monte_carlo_retirement.py
 You can pass a specific JSON configuration file as an argument. This is useful for comparing different scenarios (e.g., `aggressive.json` vs `conservative.json`).
 
 ```bash
-python monte_carlo_retirement.py my_scenario_config.json
+uv run python main.py my_scenario_config.json
 ````
 
 ## Configuration Manual (config.json)
