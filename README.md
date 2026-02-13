@@ -16,7 +16,6 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
 
 ## Prerequisites
 
-* Python 3.8 or higher.
 * The following Python libraries:
     * `numpy`
     * `pandas`
