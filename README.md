@@ -17,6 +17,7 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
 ## Prerequisites
 
 * The following Python libraries:
+    * `uv` (recommended for dependency management and execution)
     * `numpy`
     * `pandas`
     * `matplotlib`
