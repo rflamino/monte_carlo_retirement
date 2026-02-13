@@ -34,20 +34,6 @@ The project is modularized into the following components:
 *   `utils.py`: Utility functions (logging, seeding).
 *   `constants.py`: Project constants.
 
-## Installation
-
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/rflamino/monte_carlo_retirement.git](https://github.com/rflamino/monte_carlo_retirement.git)
-    cd monte_carlo_retirement
-    ```
-
-2.  **Install dependencies:**
-    You can install the required packages directly via pip:
-    ```bash
-    pip install numpy pandas matplotlib pydantic
-    ```
-
 ## Usage
 
 ### 1. Default Execution
