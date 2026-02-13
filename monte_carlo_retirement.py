@@ -159,7 +159,7 @@ class RetirementMonteCarloSimulator:
 
         # --- ACCUMULATION (WORKING) PHASE ---
         for m_idx in range(1, working_months + 1):
-            current_year_idx = (m_idx -1) // MONTHS_PER_YEAR
+
 
             if (m_idx - 1) % MONTHS_PER_YEAR == 0: # Start of a new year
                 if m_idx > 1: # Not the very first month of simulation
@@ -256,10 +256,12 @@ class RetirementMonteCarloSimulator:
                 eoy_balance_inv1_before_tax, eoy_balance_inv2_before_tax = balance_inv1, balance_inv2
                 if not p.inv1_use_realized_gains_tax_system and p.inv1_annual_tax_on_gains_rate > 0:
                     gain_inv1 = eoy_balance_inv1_before_tax - bal_inv1_start_tax_year_acc - contrib_inv1_tax_year
-                    if gain_inv1 > 0: balance_inv1 -= gain_inv1 * p.inv1_annual_tax_on_gains_rate
+                    if gain_inv1 > 0:
+                        balance_inv1 -= gain_inv1 * p.inv1_annual_tax_on_gains_rate
                 if not p.inv2_use_realized_gains_tax_system and p.inv2_annual_tax_on_gains_rate > 0:
                     gain_inv2 = eoy_balance_inv2_before_tax - bal_inv2_start_tax_year_acc - contrib_inv2_tax_year
-                    if gain_inv2 > 0: balance_inv2 -= gain_inv2 * p.inv2_annual_tax_on_gains_rate
+                    if gain_inv2 > 0:
+                        balance_inv2 -= gain_inv2 * p.inv2_annual_tax_on_gains_rate
                 
                 total_balance = balance_inv1 + balance_inv2
                 if m_idx % MONTHS_PER_YEAR == 0:
@@ -329,7 +331,7 @@ class RetirementMonteCarloSimulator:
             nominal_annual_expenses = p.monthly_expenses * MONTHS_PER_YEAR * master_cumulative_inflation
 
             net_other_annual_income = 0.0
-            current_abs_sim_year_idx = num_working_years_for_indexing + year_num
+
 
             for income_stream_details in path_specific_other_income_streams_details:
                 if year_num >= income_stream_details.start_after_retirement_years:
@@ -368,7 +370,8 @@ class RetirementMonteCarloSimulator:
                 total_after_growth = balance_inv1 + balance_inv2
 
                 if total_after_growth <= SMALL_EPSILON and monthly_withdrawal_needed > SMALL_EPSILON:
-                    balance_inv1 = max(0, balance_inv1); balance_inv2 = max(0, balance_inv2)
+                    balance_inv1 = max(0, balance_inv1)
+                    balance_inv2 = max(0, balance_inv2)
                     break
                 
                 actual_monthly_withdrawal_target = min(monthly_withdrawal_needed, total_after_growth)
@@ -420,7 +423,8 @@ class RetirementMonteCarloSimulator:
                 )
                 total_gross_withdraw_inv2_this_year += gw2
                 
-                balance_inv1 = max(0, balance_inv1); balance_inv2 = max(0, balance_inv2)
+                balance_inv1 = max(0, balance_inv1)
+                balance_inv2 = max(0, balance_inv2)
                 cost_basis_inv1 = min(cost_basis_inv1, balance_inv1 if balance_inv1 > 0 else 0) # CB cannot exceed balance
                 cost_basis_inv2 = min(cost_basis_inv2, balance_inv2 if balance_inv2 > 0 else 0)
 
@@ -483,14 +487,18 @@ class RetirementMonteCarloSimulator:
             if not p.inv1_use_realized_gains_tax_system and p.inv1_annual_tax_on_gains_rate > 0:
                 # Gain is current EOY balance + gross withdrawals made during year - balance at start of year
                 gain_inv1_ret_year = (balance_inv1 + total_gross_withdraw_inv1_this_year) - bal_inv1_start_tax_year_ret
-                if gain_inv1_ret_year > 0: balance_inv1 -= gain_inv1_ret_year * p.inv1_annual_tax_on_gains_rate
+                if gain_inv1_ret_year > 0:
+                    balance_inv1 -= gain_inv1_ret_year * p.inv1_annual_tax_on_gains_rate
             
             if not p.inv2_use_realized_gains_tax_system and p.inv2_annual_tax_on_gains_rate > 0:
                 gain_inv2_ret_year = (balance_inv2 + total_gross_withdraw_inv2_this_year) - bal_inv2_start_tax_year_ret
-                if gain_inv2_ret_year > 0: balance_inv2 -= gain_inv2_ret_year * p.inv2_annual_tax_on_gains_rate
+                if gain_inv2_ret_year > 0:
+                    balance_inv2 -= gain_inv2_ret_year * p.inv2_annual_tax_on_gains_rate
 
-            balance_inv1 = max(0, balance_inv1); balance_inv2 = max(0, balance_inv2)
-            cost_basis_inv1 = min(cost_basis_inv1, balance_inv1); cost_basis_inv2 = min(cost_basis_inv2, balance_inv2)
+            balance_inv1 = max(0, balance_inv1)
+            balance_inv2 = max(0, balance_inv2)
+            cost_basis_inv1 = min(cost_basis_inv1, balance_inv1)
+            cost_basis_inv2 = min(cost_basis_inv2, balance_inv2)
 
 
             total_balance_after_annual_tax = balance_inv1 + balance_inv2
@@ -507,7 +515,8 @@ class RetirementMonteCarloSimulator:
                 total_cb = cost_basis_inv1 + cost_basis_inv2
                 cost_basis_inv1 = total_cb * p.allocation_inv1_pct
                 cost_basis_inv2 = total_cb * p.allocation_inv2_pct
-                cost_basis_inv1 = min(cost_basis_inv1, balance_inv1); cost_basis_inv2 = min(cost_basis_inv2, balance_inv2)
+                cost_basis_inv1 = min(cost_basis_inv1, balance_inv1)
+                cost_basis_inv2 = min(cost_basis_inv2, balance_inv2)
 
 
         final_total_balance = balance_inv1 + balance_inv2
@@ -598,13 +607,20 @@ class RetirementMonteCarloSimulator:
             num_s = int(base_sim_count * 0.5) 
         else:
             delta_prob = abs(achieved_prob_prev_iter - target_prob_pct)
-            if delta_prob <= 1.0:   num_s = int(base_sim_count * 4.00) # Very close
-            elif delta_prob <= 1.5: num_s = int(base_sim_count * 2.00) # Even closer
-            elif delta_prob <= 2.0: num_s = int(base_sim_count * 1.00) # Getting closer            
-            elif delta_prob <= 3.0: num_s = int(base_sim_count * 0.80)
-            elif delta_prob <= 4.0: num_s = int(base_sim_count * 0.70)            
-            elif delta_prob <= 5.0: num_s = int(base_sim_count * 0.50)
-            else:                   num_s = int(base_sim_count * 0.20) # Far
+            if delta_prob <= 1.0:
+                num_s = int(base_sim_count * 4.00) # Very close
+            elif delta_prob <= 1.5:
+                num_s = int(base_sim_count * 2.00) # Even closer
+            elif delta_prob <= 2.0:
+                num_s = int(base_sim_count * 1.00) # Getting closer            
+            elif delta_prob <= 3.0:
+                num_s = int(base_sim_count * 0.80)
+            elif delta_prob <= 4.0:
+                num_s = int(base_sim_count * 0.70)            
+            elif delta_prob <= 5.0:
+                num_s = int(base_sim_count * 0.50)
+            else:
+                num_s = int(base_sim_count * 0.20) # Far
         
         # Ensure the number of simulations is not excessively small or large
         final_sim_count = max(MINIMUM_SIMULATIONS_FOR_SEARCH_STEP, min(num_s, base_sim_count * 5)) # Cap max multiplier
@@ -646,7 +662,8 @@ class RetirementMonteCarloSimulator:
                 base_num_simulations_per_test
             )
             
-            if verbose: logger.info(f"Search iter {search_iteration}: Testing {current_test_months} m ({current_test_months/MONTHS_PER_YEAR:.1f} yrs) with {iter_sim_count} sims.")
+            if verbose:
+                logger.info(f"Search iter {search_iteration}: Testing {current_test_months} m ({current_test_months/MONTHS_PER_YEAR:.1f} yrs) with {iter_sim_count} sims.")
             
             summary_df, _, _ = self.run_monte_carlo_simulations(current_test_months, iter_sim_count)
             
@@ -657,13 +674,15 @@ class RetirementMonteCarloSimulator:
             else:
                 current_iter_achieved_probability_pct = (summary_df['Final Balance'] > SMALL_EPSILON).mean() * 100.0
 
-            if verbose: logger.info(f"  Search iter {search_iteration}: Prob for {current_test_months} m: {current_iter_achieved_probability_pct:.2f}% (Target: {target_probability_pct:.2f}%)")
+            if verbose:
+                logger.info(f"  Search iter {search_iteration}: Prob for {current_test_months} m: {current_iter_achieved_probability_pct:.2f}% (Target: {target_probability_pct:.2f}%)")
 
             if current_iter_achieved_probability_pct > highest_prob_if_target_not_met:
                 highest_prob_if_target_not_met = current_iter_achieved_probability_pct
 
             if current_iter_achieved_probability_pct >= target_probability_pct:
-                if verbose: logger.info(f"  Target met at {current_test_months} months.")
+                if verbose:
+                    logger.info(f"  Target met at {current_test_months} months.")
                 # If we overshot with a large step, we might want to backtrack and refine
                 if months_increment_step > 1:
                     logger.info(f"  Target met with step {months_increment_step}. Refining search by smaller steps...")
@@ -715,7 +734,8 @@ def plot_simulation_results(results_df: pd.DataFrame,
         ax.text(0.5, 0.5, "No successful outcomes to display.", transform=ax.transAxes, ha="center", va="center")
 
 
-    TEXT_INPUT_COLOR = '#1f77b4'; TEXT_OUTPUT_COLOR = '#ff7f0e'
+    TEXT_INPUT_COLOR = '#1f77b4'
+    TEXT_OUTPUT_COLOR = '#ff7f0e'
     p = input_config
     
     # Prepare text content (condense if needed for space)
@@ -777,7 +797,8 @@ def plot_simulation_results(results_df: pd.DataFrame,
     plt.title(f'Final Balance Distribution: {input_config.Nickname}', fontsize=14)
     plt.xlabel('Final Balance (Millions of $)', fontsize=10) 
     plt.ylabel('Frequency', fontsize=10) # Simplified
-    plt.xticks(fontsize=8); plt.yticks(fontsize=8)
+    plt.xticks(fontsize=8)
+    plt.yticks(fontsize=8)
     
     # Adjust legend position if text box is in upper right
     # If the text box is well-placed, the legend might need to move or be omitted if labels are clear
@@ -984,7 +1005,8 @@ def main():
     logger.info(f"--- Input Parameters For Scenario: {config.Nickname} ---")
     config_as_dict_for_logging = config.model_dump(by_alias=False) 
     for key, value in config_as_dict_for_logging.items():
-        if key == "Nickname": continue
+        if key == "Nickname":
+            continue
         if key == "other_income_streams":
             logger.info(f"{key.replace('_', ' ').title()}:")
             if config.other_income_streams:
@@ -994,14 +1016,17 @@ def main():
                     logger.info(f"  - {stream_model.name}: ${stream_model.monthly_amount_today:,.0f}/mo (T=0 real value), "
                                 f"starts after {stream_model.start_after_retirement_years} ret. yrs{duration_str}{inflation_idx_str}, "
                                 f"Tax: {stream_model.tax_rate*100:.0f}%")
-            else: logger.info("  - None")
-        elif key == "target_probability": logger.info(f"{key.replace('_', ' ').title()}: {value:.2f}%")
+            else:
+                logger.info("  - None")
+        elif key == "target_probability":
+            logger.info(f"{key.replace('_', ' ').title()}: {value:.2f}%")
         elif isinstance(value, float) and ("rate" in key or "mean" in key or "volatility" in key or "pct" in key) and \
              key not in ["initial_balance", "monthly_contribution", "monthly_expenses", "monthly_amount_today"]:
             logger.info(f"{key.replace('_', ' ').title()}: {value*100:.2f}%")
         elif isinstance(value, (float, int)) and any(curr_kw in key for curr_kw in ["balance", "contribution", "expenses", "amount"]):
              logger.info(f"{key.replace('_', ' ').title()}: ${value:,.2f}") # Assuming $
-        else: logger.info(f"{key.replace('_', ' ').title()}: {value}")
+        else:
+            logger.info(f"{key.replace('_', ' ').title()}: {value}")
     logger.info(f"Allocation Inv2 Pct (Calculated): {config.allocation_inv2_pct*100:.2f}%")
     logger.info("--- End of Input Parameters ---")
 
