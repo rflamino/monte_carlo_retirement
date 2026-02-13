@@ -2,21 +2,23 @@
 # Author: Reinaldo S. Flamino
 # Description: A robust Python-based Monte Carlo simulation tool designed to project portfolio longevity in retirement.
 
+import datetime as _dt
+import hashlib
+import json
+import multiprocessing
+import os
+import sys
+import warnings
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use('Agg') # Set a non-interactive backend BEFORE importing pyplot
-import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter 
-import datetime as _dt 
-import hashlib
-import logging
-import multiprocessing
-from typing import Dict, Any, Tuple, Optional, List, Union
-import os
-import json 
-import sys  
-import warnings
+from loguru import logger
+from matplotlib.ticker import FuncFormatter
+
 
 
 # Pydantic for configuration validation and data management
@@ -90,7 +92,7 @@ class Config(BaseModel):
         if v > 0.05:
             # Safe access to nickname in case validation fails before nickname is set
             scen_name = info.data.get('Nickname', 'N/A')
-            logging.warning(f"Inflation volatility ({v*100:.1f}%) is relatively high for scenario '{scen_name}'.")
+            logger.warning(f"Inflation volatility ({v*100:.1f}%) is relatively high for scenario '{scen_name}'.")
         return v
 
     @property
@@ -98,7 +100,7 @@ class Config(BaseModel):
         return round(1.0 - self.allocation_inv1_pct, 4)
 
 # --- LOGGER SETUP ---
-logger = logging.getLogger(__name__)
+# logger is imported from loguru directly
 
 # --- UTILITY FUNCTIONS ---
 def _generate_seed_from_timestamp() -> int:
@@ -123,6 +125,12 @@ def load_config_from_json(file_path: str) -> Dict[str, Any]:
 
 # --- CORE SIMULATION LOGIC ---
 class RetirementMonteCarloSimulator:
+    """
+    A Monte Carlo simulator for retirement planning.
+
+    Simulates portfolio performance over a working accumulation phase and a retirement decumulation phase,
+    taking into account inflation, taxes, contributions, Expenses, and other variables.
+    """
     def __init__(self, params_model: Config, main_seed_override: Optional[int] = None):
         self.params_model = params_model.model_copy(deep=True) # Use a copy to modify (e.g. income stream nominal values)
 
@@ -134,7 +142,51 @@ class RetirementMonteCarloSimulator:
             self.main_seed = _generate_seed_from_timestamp()
         logger.info(f"Simulator initialized for scenario '{self.params_model.Nickname}' with main seed: {self.main_seed}")
 
+    def _calculate_withdrawal_and_update(
+        self,
+        bal_inv: float,
+        cb_inv: float,
+        net_withdrawal_target_for_inv: float,
+        use_real_tax: bool,
+        real_tax_rate: float
+    ) -> Tuple[float, float, float]:
+        """
+        Calculates the gross withdrawal needed to meet a net target, considering taxes,
+        and updates the cost basis.
+        """
+        final_gross_withdrawal = net_withdrawal_target_for_inv
+        principal_component_of_withdrawal = net_withdrawal_target_for_inv
+
+        if use_real_tax and real_tax_rate > 0 and net_withdrawal_target_for_inv > SMALL_EPSILON and bal_inv > SMALL_EPSILON:
+            total_gain_in_inv = max(0, bal_inv - cb_inv)
+            if total_gain_in_inv > SMALL_EPSILON:
+                gain_proportion_of_balance = total_gain_in_inv / bal_inv
+                denominator = 1.0 - (gain_proportion_of_balance * real_tax_rate)
+                if denominator > SMALL_EPSILON:
+                    final_gross_withdrawal = net_withdrawal_target_for_inv / denominator
+                else:
+                    final_gross_withdrawal = min(net_withdrawal_target_for_inv * 2, bal_inv)
+                final_gross_withdrawal = min(final_gross_withdrawal, bal_inv)
+                realized_gain_from_this_withdrawal = final_gross_withdrawal * gain_proportion_of_balance
+                principal_component_of_withdrawal = final_gross_withdrawal - realized_gain_from_this_withdrawal
+
+        final_gross_withdrawal = min(final_gross_withdrawal, bal_inv)
+        principal_component_of_withdrawal = min(principal_component_of_withdrawal, cb_inv)
+        new_balance_inv = bal_inv - final_gross_withdrawal
+        new_cost_basis_inv = cb_inv - principal_component_of_withdrawal
+        return max(0, new_balance_inv), max(0, new_cost_basis_inv), final_gross_withdrawal
+
     def _run_single_simulation_path(self, working_months: int, path_seed: int) -> Dict[str, Union[float, List[float]]]:
+        """
+        Runs a single simulation path for a given number of working months and seed.
+
+        Args:
+            working_months: Number of months to simulate working/accumulation phase.
+            path_seed: Random seed for this specific simulation path.
+
+        Returns:
+            A dictionary containing simulation results: 'Start Balance', 'Final Balance', and 'Trajectory'.
+        """
         np.random.seed(path_seed)
         p = self.params_model
 
@@ -380,44 +432,16 @@ class RetirementMonteCarloSimulator:
                 prop1 = balance_inv1 / total_after_growth if total_after_growth > SMALL_EPSILON else p.allocation_inv1_pct
                 prop2 = 1.0 - prop1
 
-                # --- calculate_gross_withdrawal_and_update_basis (nested function) ---
-                def calculate_gross_withdrawal_and_update_basis(
-                    bal_inv: float, cb_inv: float, net_withdrawal_target_for_inv: float,
-                    use_real_tax: bool, real_tax_rate: float
-                ) -> Tuple[float, float, float]:
-                    final_gross_withdrawal = net_withdrawal_target_for_inv 
-                    principal_component_of_withdrawal = net_withdrawal_target_for_inv 
-
-                    if use_real_tax and real_tax_rate > 0 and net_withdrawal_target_for_inv > SMALL_EPSILON and bal_inv > SMALL_EPSILON:
-                        total_gain_in_inv = max(0, bal_inv - cb_inv)
-                        if total_gain_in_inv > SMALL_EPSILON:
-                            gain_proportion_of_balance = total_gain_in_inv / bal_inv
-                            denominator = 1.0 - (gain_proportion_of_balance * real_tax_rate)
-                            if denominator > SMALL_EPSILON:
-                                final_gross_withdrawal = net_withdrawal_target_for_inv / denominator
-                            else: 
-                                final_gross_withdrawal = min(net_withdrawal_target_for_inv * 2, bal_inv) 
-                            final_gross_withdrawal = min(final_gross_withdrawal, bal_inv)
-                            realized_gain_from_this_withdrawal = final_gross_withdrawal * gain_proportion_of_balance
-                            principal_component_of_withdrawal = final_gross_withdrawal - realized_gain_from_this_withdrawal
-                    
-                    final_gross_withdrawal = min(final_gross_withdrawal, bal_inv)
-                    principal_component_of_withdrawal = min(principal_component_of_withdrawal, cb_inv)
-                    new_balance_inv = bal_inv - final_gross_withdrawal
-                    new_cost_basis_inv = cb_inv - principal_component_of_withdrawal
-                    return max(0, new_balance_inv), max(0, new_cost_basis_inv), final_gross_withdrawal
-                # --- End of nested function ---
-
                 balance_inv1_after_growth, cost_basis_inv1_after_growth = balance_inv1, cost_basis_inv1
                 balance_inv2_after_growth, cost_basis_inv2_after_growth = balance_inv2, cost_basis_inv2
 
-                balance_inv1, cost_basis_inv1, gw1 = calculate_gross_withdrawal_and_update_basis(
+                balance_inv1, cost_basis_inv1, gw1 = self._calculate_withdrawal_and_update(
                     balance_inv1_after_growth, cost_basis_inv1_after_growth, actual_monthly_withdrawal_target * prop1,
                     p.inv1_use_realized_gains_tax_system, p.inv1_realized_gains_tax_rate
                 )
                 total_gross_withdraw_inv1_this_year += gw1
 
-                balance_inv2, cost_basis_inv2, gw2 = calculate_gross_withdrawal_and_update_basis(
+                balance_inv2, cost_basis_inv2, gw2 = self._calculate_withdrawal_and_update(
                     balance_inv2_after_growth, cost_basis_inv2_after_growth, actual_monthly_withdrawal_target * prop2,
                     p.inv2_use_realized_gains_tax_system, p.inv2_realized_gains_tax_rate
                 )
@@ -973,37 +997,10 @@ def plot_portfolio_trajectories(
         plt.close()
 
 
-# --- MAIN EXECUTION SCRIPT ---
-def main():
-    current_timestamp_str = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"ret_proj_log_{current_timestamp_str}.log"
-    logging.basicConfig(
-        level=logging.INFO, 
-        format='%(asctime)s - %(name)s - %(levelname)s - %(threadName)s - %(message)s',
-        handlers=[logging.StreamHandler(), logging.FileHandler(log_filename, mode='w')]
-    )
-    logger.info(f"Logging initialized. Log file: {log_filename}")
-
-    # --- LOAD CONFIGURATION FROM JSON ---
-    if len(sys.argv) > 1:
-        json_filename = sys.argv[1]
-    else:
-        json_filename = "config.json"
-        logger.info(f"No config file specified via argument. Defaulting to '{json_filename}'")
-
-    logger.info(f"Loading configuration from: {json_filename}")
-    config_dict = load_config_from_json(json_filename)
-
-    config: Optional[Config] = None
-    try:
-        config = Config(**config_dict)
-        logger.info(f"Configuration for scenario '{config.Nickname}' loaded and validated successfully.")
-    except Exception as e: 
-        logger.error(f"Configuration error: {e}", exc_info=True)
-        return 
-
+def log_input_parameters(config: Config) -> None:
+    """Logs the input parameters for the simulation."""
     logger.info(f"--- Input Parameters For Scenario: {config.Nickname} ---")
-    config_as_dict_for_logging = config.model_dump(by_alias=False) 
+    config_as_dict_for_logging = config.model_dump(by_alias=False)
     for key, value in config_as_dict_for_logging.items():
         if key == "Nickname":
             continue
@@ -1029,6 +1026,68 @@ def main():
             logger.info(f"{key.replace('_', ' ').title()}: {value}")
     logger.info(f"Allocation Inv2 Pct (Calculated): {config.allocation_inv2_pct*100:.2f}%")
     logger.info("--- End of Input Parameters ---")
+
+
+def log_simulation_results(
+    config: Config,
+    required_w_months: int,
+    final_success_prob_pct: float,
+    median_start_ret_bal: float,
+    median_final_bal_successful: float,
+    swr: float,
+    final_summary_df: pd.DataFrame
+) -> None:
+    """Logs the final results of the simulation."""
+    logger.info(f"--- Final Simulation Results for Scenario: '{config.Nickname}' ---")
+    logger.info(f"Determined Required Working Months: {required_w_months} ({required_w_months/MONTHS_PER_YEAR:.1f} years)")
+    logger.info(f"Probability of Not Running Out of Money (Final Sims): {final_success_prob_pct:.2f}% (Target: {config.target_probability:.2f}%)")
+    logger.info(f"Median Balance at Start of Retirement (All Sims): ${median_start_ret_bal:,.2f}")
+    logger.info(f"Median Final Balance (Successful Sims Only): ${median_final_bal_successful:,.2f}")
+    logger.info(f"Est. SWR (Nominal, 1st yr, on Median Start Bal, using T=0 expenses): {swr:.2f}%")
+
+    percentiles_final_balance = final_summary_df['Final Balance'].quantile([0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99])
+    logger.info("Final Balance Percentiles (All Sims, $):")
+    for p_val, value in percentiles_final_balance.items():
+        logger.info(f"  {p_val*100:.0f}th: {max(0, value):,.2f}")
+
+
+# --- MAIN EXECUTION SCRIPT ---
+def main():
+    """
+    Main execution entry point.
+    
+    Loads configuration, runs the simulation search for minimum working months,
+    executes the final simulation set, logs results, and generates plots.
+    """
+    current_timestamp_str = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"ret_proj_log_{current_timestamp_str}.log"
+    
+    # Configure loguru
+    logger.remove() # Remove default handler
+    logger.add(sys.stderr, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO")
+    logger.add(log_filename, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO", rotation="10 MB")
+    
+    logger.info(f"Logging initialized. Log file: {log_filename}")
+
+    # --- LOAD CONFIGURATION FROM JSON ---
+    if len(sys.argv) > 1:
+        json_filename = sys.argv[1]
+    else:
+        json_filename = "config.json"
+        logger.info(f"No config file specified via argument. Defaulting to '{json_filename}'")
+
+    logger.info(f"Loading configuration from: {json_filename}")
+    config_dict = load_config_from_json(json_filename)
+
+    config: Optional[Config] = None
+    try:
+        config = Config(**config_dict)
+        logger.info(f"Configuration for scenario '{config.Nickname}' loaded and validated successfully.")
+    except Exception as e: 
+        logger.error(f"Configuration error: {e}", exc_info=True)
+        return 
+
+    log_input_parameters(config)
 
     simulator = RetirementMonteCarloSimulator(config)
 
@@ -1063,17 +1122,15 @@ def main():
     initial_annual_expenses_t0 = config.monthly_expenses * MONTHS_PER_YEAR 
     swr = (initial_annual_expenses_t0 * 100.0) / median_start_ret_bal if median_start_ret_bal > SMALL_EPSILON else float('nan')
 
-    logger.info(f"--- Final Simulation Results for Scenario: '{config.Nickname}' ---")
-    logger.info(f"Determined Required Working Months: {required_w_months} ({required_w_months/MONTHS_PER_YEAR:.1f} years)")
-    logger.info(f"Probability of Not Running Out of Money (Final Sims): {final_success_prob_pct:.2f}% (Target: {config.target_probability:.2f}%)")
-    logger.info(f"Median Balance at Start of Retirement (All Sims): ${median_start_ret_bal:,.2f}")
-    logger.info(f"Median Final Balance (Successful Sims Only): ${median_final_bal_successful:,.2f}")
-    logger.info(f"Est. SWR (Nominal, 1st yr, on Median Start Bal, using T=0 expenses): {swr:.2f}%")
-
-    percentiles_final_balance = final_summary_df['Final Balance'].quantile([0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99])
-    logger.info("Final Balance Percentiles (All Sims, $):")
-    for p_val, value in percentiles_final_balance.items():
-        logger.info(f"  {p_val*100:.0f}th: {max(0, value):,.2f}")
+    log_simulation_results(
+        config,
+        required_w_months,
+        final_success_prob_pct,
+        median_start_ret_bal,
+        median_final_bal_successful,
+        swr,
+        final_summary_df
+    )
 
     safe_nickname = "".join(c if c.isalnum() or c in ['_', '-'] else '_' for c in config.Nickname)
     plot_file_base = f"ret_proj_{safe_nickname}_{current_timestamp_str}"

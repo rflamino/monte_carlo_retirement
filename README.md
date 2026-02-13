@@ -2,7 +2,7 @@
 
 A robust Python-based Monte Carlo simulation tool designed to project portfolio longevity in retirement. This tool calculates the success probability of a retirement plan based on stochastic market returns, inflation, and specific tax regimes, helping determine the minimum working months required to achieve a target success rate.
 
-## 🚀 Features
+## Features
 
 * **Monte Carlo Simulation:** Runs thousands of scenarios (paths) to model market volatility and sequence of returns risk.
 * **JSON Configuration:** Fully configurable via an external JSON file—no code changes required to test different scenarios.
@@ -14,7 +14,7 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
     * **Histogram:** Distribution of final portfolio balances.
     * **Trajectory Plot:** Percentile bands (5th-95th) showing portfolio value over time.
 
-## 📋 Prerequisites
+## Prerequisites
 
 * Python 3.8 or higher.
 * The following Python libraries:
@@ -23,7 +23,7 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
     * `matplotlib`
     * `pydantic`
 
-## 🛠️ Installation
+## Installation
 
 1.  **Clone the repository:**
     ```bash
@@ -37,7 +37,7 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
     pip install numpy pandas matplotlib pydantic
     ```
 
-## 💻 Usage
+## Usage
 
 ### 1. Default Execution
 By default, the script looks for a file named `monte_carlo_retirement.json` in the same directory.
@@ -54,7 +54,7 @@ You can pass a specific JSON configuration file as an argument. This is useful f
 python monte_carlo_retirement.py my_scenario_config.json
 ````
 
-## ⚙️ Configuration Manual (config.json)
+## Configuration Manual (config.json)
 
 The simulation is controlled entirely by the JSON configuration file. Below is a reference for all available parameters.
 
@@ -139,7 +139,7 @@ A list of objects defining extra income (Social Security, Rental, etc.).
 
 -----
 
-## 📊 Outputs
+## Outputs
 
 After a successful run, the script generates:
 
