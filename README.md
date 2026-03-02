@@ -2,6 +2,8 @@
 
 A robust Python-based Monte Carlo simulation tool designed to project portfolio longevity in retirement. This tool calculates the success probability of a retirement plan based on stochastic market returns, inflation, and specific tax regimes, helping determine the minimum working months required to achieve a target success rate.
 
+Includes a **FastAPI backend** and **React frontend** for interactive browser-based simulation and visualization.
+
 ## Features
 
 * **Monte Carlo Simulation:** Runs thousands of scenarios (paths) to model market volatility and sequence of returns risk.
@@ -10,49 +12,107 @@ A robust Python-based Monte Carlo simulation tool designed to project portfolio 
 * **Advanced Tax Modeling:** Supports both **Realized Gains** (tax on sale) and **Annual Taxation** (e.g., "Come-Cotas") systems.
 * **Inflation Modeling:** Simulates inflation as a stochastic variable, affecting both expenses and asset returns.
 * **Additional Income Streams:** Handles complex income scenarios like Pensions, Social Security, or Rental income with specific start dates, durations, and tax rates.
-* **Visualization:** Automatically generates:
-    * **Histogram:** Distribution of final portfolio balances.
-    * **Trajectory Plot:** Percentile bands (5th-95th) showing portfolio value over time.
+* **Web UI:** React frontend with interactive charts (trajectory percentile bands, final balance histogram) and a JSON config editor.
+* **REST API:** FastAPI backend exposing simulation as a service, with Swagger docs at `/docs`.
+* **CLI Mode:** Standalone CLI that generates PNG plots and log files.
 
 ## Prerequisites
 
-* The following Python libraries:
-    * `uv` (recommended for dependency management and execution)
-    * `numpy`
-    * `pandas`
-    * `matplotlib`
-    * `pydantic`
-    * `loguru`
+* Python 3.13+
+* [`uv`](https://docs.astral.sh/uv/) (recommended for dependency management and execution)
+* Node.js 18+ and npm (for the frontend only)
 
 ## Project Structure
 
-The project is modularized into the following components:
-
-*   `main.py`: Entry point for the application.
-*   `config.py`: Configuration loading and validation.
-*   `simulation.py`: Core Monte Carlo simulation logic.
-*   `plotting.py`: Visualization generation.
-*   `utils.py`: Utility functions (logging, seeding).
-*   `constants.py`: Project constants.
-
-## Usage
-
-### 1. Default Execution
-By default, the script looks for a file named `config.json` in the same directory.
-
-```bash
-uv run python main.py
+```
+monte_carlo_retirement/
+├── main.py            # CLI entry point
+├── server.py          # FastAPI backend entry point
+├── config.py          # Configuration loading & Pydantic validation
+├── simulation.py      # Core Monte Carlo simulation logic
+├── plotting.py        # Matplotlib plot generation (CLI mode)
+├── utils.py           # Utility functions (logging, seeding)
+├── constants.py       # Shared constants
+├── config.json        # Default scenario configuration
+├── pyproject.toml     # Python dependencies
+└── frontend/          # React single-page app
+    ├── package.json
+    ├── vite.config.js # Dev proxy → backend on :8080
+    ├── index.html
+    └── src/
+        ├── App.jsx
+        ├── App.css
+        ├── api.js
+        └── components/
+            ├── ConfigEditor.jsx
+            ├── SummaryCard.jsx
+            ├── TrajectoryChart.jsx
+            └── HistogramChart.jsx
 ```
 
-## 2. Custom Configuration
+## Quick Start
 
-You can pass a specific JSON configuration file as an argument. This is useful for comparing different scenarios (e.g., `aggressive.json` vs `conservative.json`).
+### Option A: Web UI (backend + frontend)
 
 ```bash
-uv run python main.py my_scenario_config.json
-````
+# 1. Install Python dependencies
+uv sync
 
-## Configuration Manual (config.json)
+# 2. Start the API server (port 8080)
+uv run python server.py
+
+# 3. In a second terminal, install and start the frontend (port 3000)
+cd frontend
+npm install
+npm run dev
+```
+
+Open **http://localhost:3000** in your browser. The default config loads automatically—edit it, then click **Run Simulation**.
+
+### Option B: CLI only
+
+```bash
+# Default config (config.json)
+uv run python main.py
+
+# Custom config file
+uv run python main.py my_scenario.json
+```
+
+## API Endpoints
+
+The FastAPI server (`server.py`) exposes the following endpoints. Interactive Swagger docs are available at `http://localhost:8080/docs`.
+
+| Method | Path | Description |
+| :----- | :--- | :---------- |
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/config/default` | Returns the bundled `config.json` as a template |
+| `POST` | `/api/validate` | Validates a configuration without running a simulation |
+| `POST` | `/api/simulate` | Runs the full simulation and returns data for plotting |
+
+### `POST /api/simulate` request body
+
+```json
+{
+  "config": { /* same schema as config.json */ },
+  "working_months_override": 180
+}
+```
+
+* `config` — required. Same structure as `config.json`.
+* `working_months_override` — optional. If provided, skips the search phase and runs directly with this many working months.
+
+### `POST /api/simulate` response
+
+| Field | Content |
+| :---- | :------ |
+| `summary` | Working months/years, success probability, SWR, median balances, percentiles (P1–P99) |
+| `trajectory` | Year-indexed percentile arrays (P5–P95) and sample paths for time-series charts |
+| `histogram` | Raw `final_balances` and `start_balances` arrays for client-side binning |
+
+-----
+
+## Configuration Reference (config.json)
 
 The simulation is controlled entirely by the JSON configuration file. Below is a reference for all available parameters.
 
@@ -139,11 +199,14 @@ A list of objects defining extra income (Social Security, Rental, etc.).
 
 ## Outputs
 
-After a successful run, the script generates:
+### CLI mode
+
+After a successful run, the CLI generates:
 
   * **Log File:** `ret_proj_log_YYYYMMDD_HHMMSS.log` containing detailed run statistics.
   * **Histogram:** `ret_proj_[ScenarioName]_[Timestamp]_HIST.png` showing the distribution of final balances.
   * **Trajectories:** `ret_proj_[ScenarioName]_[Timestamp]_TRAJ.png` showing the median, 5th, and 95th percentile portfolio values over time.
 
------
+### Web UI
 
+The React frontend displays interactive versions of the same charts, plus a summary card with key metrics, all rendered in the browser after each simulation run.

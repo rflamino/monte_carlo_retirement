@@ -67,10 +67,15 @@ Desktop.ini
 # Mac
 .DS_Store
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
 # Project Specific
 # generated plots
 ret_proj_*.png
 # generated logs
 ret_proj_*.log
+server.log
 # personal config files
 reinaldo.json 
