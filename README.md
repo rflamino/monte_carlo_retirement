@@ -12,7 +12,7 @@ Includes a **FastAPI backend** and **React frontend** for interactive browser-ba
 * **Advanced Tax Modeling:** Supports both **Realized Gains** (tax on sale) and **Annual Taxation** (e.g., "Come-Cotas") systems.
 * **Inflation Modeling:** Simulates inflation as a stochastic variable, affecting both expenses and asset returns.
 * **Additional Income Streams:** Handles complex income scenarios like Pensions, Social Security, or Rental income with specific start dates, durations, and tax rates.
-* **Web UI:** React frontend with interactive charts (trajectory percentile bands, final balance histogram) and a JSON config editor.
+* **Web UI:** React frontend with interactive charts (trajectory percentile bands, final balance histogram), live simulation progress, vertical reference lines (retirement start, income streams), and a JSON config editor.
 * **REST API:** FastAPI backend exposing simulation as a service, with Swagger docs at `/docs`.
 * **CLI Mode:** Standalone CLI that generates PNG plots and log files.
 
@@ -48,7 +48,8 @@ monte_carlo_retirement/
             ├── ConfigEditor.jsx
             ├── SummaryCard.jsx
             ├── TrajectoryChart.jsx
-            └── HistogramChart.jsx
+            ├── HistogramChart.jsx
+            └── SimulationProgress.jsx
 ```
 
 ## Quick Start
@@ -68,7 +69,7 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:3000** in your browser. The default config loads automatically—edit it, then click **Run Simulation**.
+Open **http://localhost:3000** in your browser. The default config loads automatically—edit it, then click **Run Simulation**. The UI streams live progress (search iterations, probability) during the run.
 
 ### Option B: CLI only
 
@@ -90,6 +91,7 @@ The FastAPI server (`backend/server.py`) exposes the following endpoints. Intera
 | `GET` | `/api/config/default` | Returns the bundled `config.json` as a template |
 | `POST` | `/api/validate` | Validates a configuration without running a simulation |
 | `POST` | `/api/simulate` | Runs the full simulation and returns data for plotting |
+| `POST` | `/api/simulate/stream` | Same as above, but streams progress events via SSE before returning the result |
 
 ### `POST /api/simulate` request body
 
@@ -110,6 +112,19 @@ The FastAPI server (`backend/server.py`) exposes the following endpoints. Intera
 | `summary` | Working months/years, success probability, SWR, median balances, percentiles (P1–P99) |
 | `trajectory` | Year-indexed percentile arrays (P5–P95) and sample paths for time-series charts |
 | `histogram` | Raw `final_balances` and `start_balances` arrays for client-side binning |
+| `reference_lines` | List of `{ name, year }` for vertical reference lines (retirement start, other income streams) |
+
+### `POST /api/simulate/stream` (SSE)
+
+Streams JSON events (`data: {...}\n\n`) before the final result:
+
+| Event type | Content |
+| :--------- | :------ |
+| `phase` | `{ phase: "search" \| "final_sim", message }` |
+| `search_iter` | `{ iteration, working_months, probability, target, sim_count }` |
+| `search_complete` | `{ working_months, working_years, probability }` |
+| `result` | `{ data: <full response> }` |
+| `error` | `{ message }` |
 
 -----
 
@@ -177,7 +192,7 @@ The simulation is controlled entirely by the JSON configuration file. Below is a
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
-| `num_simulations_main` | Integer | Paths for the final run (Rec: 10000+). |
+| `num_simulations_main` | Integer | Paths for the final run (default 1000; Rec: 10000+ for production). |
 | `num_simulations_search` | Integer | Paths for the "working months" search phase. |
 | `starting_working_months_search` | Integer | Start searching for retirement date from this month (0 = today). |
 | `seed` | Integer/Null | Fix the random seed for reproducibility. `null` for random. |
@@ -210,4 +225,9 @@ After a successful run, the CLI generates:
 
 ### Web UI
 
-The React frontend displays interactive versions of the same charts, plus a summary card with key metrics, all rendered in the browser after each simulation run.
+The React frontend displays interactive versions of the same charts, plus:
+
+* **Summary card** — Working months, success probability, SWR, median balances, final balance percentiles.
+* **Portfolio trajectories** — Percentile bands (P5–P95, P25–P75), median line, sample paths, and vertical reference lines for retirement start and other income streams (State Pension, Rental Income, etc.).
+* **Final balance histogram** — Distribution of outcomes with median reference line.
+* **Live progress** — During simulation, shows search iterations, achieved probability vs target, and phase (search vs final run).
