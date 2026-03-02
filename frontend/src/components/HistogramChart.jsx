@@ -84,7 +84,7 @@ export default function HistogramChart({ finalBalances, successProbability }) {
         </span>
       </h3>
       <ResponsiveContainer width="100%" height={360}>
-        <BarChart data={bins} margin={{ top: 10, right: 20, bottom: 20, left: 20 }}>
+        <BarChart data={bins} margin={{ top: 24, right: 20, bottom: 20, left: 20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
           <XAxis
             dataKey="label"

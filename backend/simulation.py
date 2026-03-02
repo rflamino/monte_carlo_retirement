@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import multiprocessing
-from typing import Dict, Union, List, Tuple, Optional
+from typing import Callable, Dict, Union, List, Tuple, Optional
 from loguru import logger
 
 from config import Config
@@ -769,7 +769,11 @@ class RetirementMonteCarloSimulator:
         )
         return final_sim_count
 
-    def find_minimum_working_months(self, verbose: bool = True) -> Tuple[int, float]:
+    def find_minimum_working_months(
+        self,
+        verbose: bool = True,
+        progress_callback: Optional[Callable[[dict], None]] = None,
+    ) -> Tuple[int, float]:
         """
         Iteratively searches for the minimum number of working months required
         to achieve the target success probability.
@@ -836,6 +840,18 @@ class RetirementMonteCarloSimulator:
                     f"  Search iter {search_iteration}: Prob for {current_test_months} m: {current_iter_achieved_probability_pct:.2f}% (Target: {target_probability_pct:.2f}%)"
                 )
 
+            if progress_callback:
+                progress_callback({
+                    "type": "search_iter",
+                    "iteration": search_iteration,
+                    "working_months": current_test_months,
+                    "working_years": round(current_test_months / MONTHS_PER_YEAR, 1),
+                    "probability": round(current_iter_achieved_probability_pct, 2),
+                    "target": target_probability_pct,
+                    "sim_count": iter_sim_count,
+                    "step_size": months_increment_step,
+                })
+
             if current_iter_achieved_probability_pct > highest_prob_if_target_not_met:
                 highest_prob_if_target_not_met = current_iter_achieved_probability_pct
 
@@ -847,6 +863,11 @@ class RetirementMonteCarloSimulator:
                     logger.info(
                         f"  Target met with step {months_increment_step}. Refining search by smaller steps..."
                     )
+                    if progress_callback:
+                        progress_callback({
+                            "type": "search_refining",
+                            "working_months": current_test_months,
+                        })
                     # Backtrack one big step, then search month by month
                     current_test_months = max(
                         starting_working_months,

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from starlette.responses import StreamingResponse
 
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
@@ -292,6 +293,172 @@ async def simulate(body: SimulationRequest):
 
     logger.info(f"Simulation complete for '{config.Nickname}'")
     return result
+
+
+@app.post("/api/simulate/stream")
+async def simulate_stream(body: SimulationRequest):
+    """Run the simulation and stream progress events via SSE."""
+    try:
+        config = Config(**body.config)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid configuration: {e}")
+
+    logger.info(f"Received streaming simulation request for '{config.Nickname}'")
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _emit(event: dict):
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+        def _run():
+            try:
+                simulator = RetirementMonteCarloSimulator(config)
+
+                if body.working_months_override is not None:
+                    required_w_months = body.working_months_override
+                    _emit({
+                        "type": "phase",
+                        "phase": "final_sim",
+                        "message": f"Using override: {required_w_months} months",
+                    })
+                else:
+                    _emit({
+                        "type": "phase",
+                        "phase": "search",
+                        "message": "Searching for minimum working months\u2026",
+                    })
+                    required_w_months, achieved_prob = (
+                        simulator.find_minimum_working_months(
+                            verbose=True,
+                            progress_callback=_emit,
+                        )
+                    )
+                    if required_w_months == -1:
+                        _emit({
+                            "type": "error",
+                            "message": (
+                                f"Target {config.target_probability:.1f}% not met. "
+                                f"Highest: {achieved_prob:.1f}%"
+                            ),
+                        })
+                        return
+                    _emit({
+                        "type": "search_complete",
+                        "working_months": required_w_months,
+                        "working_years": round(required_w_months / MONTHS_PER_YEAR, 1),
+                        "probability": round(achieved_prob, 2),
+                    })
+
+                _emit({
+                    "type": "phase",
+                    "phase": "final_sim",
+                    "message": (
+                        f"Running {config.num_simulations_main} final simulations "
+                        f"with {required_w_months} working months\u2026"
+                    ),
+                })
+
+                result = _build_result(
+                    config, simulator, required_w_months,
+                )
+                _emit({"type": "result", "data": result})
+
+            except Exception as exc:
+                _emit({"type": "error", "message": str(exc)})
+            finally:
+                _emit(None)
+
+        asyncio.get_event_loop().run_in_executor(None, _run)
+
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+def _build_result(
+    config: Config,
+    simulator: RetirementMonteCarloSimulator,
+    required_w_months: int,
+) -> dict:
+    """Run final simulation and assemble the response dict."""
+    summary_df, traj_pct_df, sample_trajectories = (
+        simulator.run_monte_carlo_simulations(
+            working_months=required_w_months,
+            num_simulations=config.num_simulations_main,
+        )
+    )
+
+    if summary_df.empty:
+        raise ValueError(f"Simulation for '{config.Nickname}' yielded no results.")
+
+    success_prob = (summary_df["Final Balance"] > SMALL_EPSILON).mean() * 100.0
+    successful = summary_df.loc[
+        summary_df["Final Balance"] > SMALL_EPSILON, "Final Balance"
+    ]
+    median_final = float(successful.median()) if not successful.empty else 0.0
+    median_start = float(summary_df["Start Balance"].median())
+
+    annual_expenses_t0 = config.monthly_expenses * MONTHS_PER_YEAR
+    swr = (
+        (annual_expenses_t0 * 100.0) / median_start
+        if median_start > SMALL_EPSILON
+        else float("nan")
+    )
+
+    pct_raw = summary_df["Final Balance"].quantile(
+        [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
+    )
+    balance_percentiles = {
+        f"p{int(k * 100)}": round(max(0.0, float(v)), 2)
+        for k, v in pct_raw.items()
+    }
+
+    trajectory_data = None
+    if traj_pct_df is not None and not traj_pct_df.empty:
+        years = list(range(len(traj_pct_df)))
+        pct_dict: Dict[str, List[float]] = {}
+        for col in traj_pct_df.columns:
+            pct_dict[f"p{int(col * 100)}"] = [
+                round(float(v), 2) for v in traj_pct_df[col]
+            ]
+        trajectory_data = {
+            "years": years,
+            "percentiles": pct_dict,
+            "sample_paths": (
+                [[round(float(v), 2) for v in path] for path in sample_trajectories]
+                if sample_trajectories
+                else []
+            ),
+        }
+
+    return {
+        "scenario": config.Nickname,
+        "summary": {
+            "required_working_months": required_w_months,
+            "required_working_years": round(required_w_months / MONTHS_PER_YEAR, 1),
+            "success_probability": round(float(success_prob), 2),
+            "target_probability": config.target_probability,
+            "median_start_balance": round(median_start, 2),
+            "median_final_balance_successful": round(median_final, 2),
+            "swr": _safe_float(swr),
+            "final_balance_percentiles": balance_percentiles,
+        },
+        "trajectory": trajectory_data,
+        "histogram": {
+            "final_balances": [
+                round(float(v), 2) for v in summary_df["Final Balance"]
+            ],
+            "start_balances": [
+                round(float(v), 2) for v in summary_df["Start Balance"]
+            ],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

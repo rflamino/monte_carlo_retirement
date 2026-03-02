@@ -1,26 +1,50 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import ConfigEditor from './components/ConfigEditor'
 import SummaryCard from './components/SummaryCard'
 import TrajectoryChart from './components/TrajectoryChart'
 import HistogramChart from './components/HistogramChart'
-import { runSimulation } from './api'
+import SimulationProgress from './components/SimulationProgress'
+import { runSimulationStream } from './api'
 
 export default function App() {
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [elapsed, setElapsed] = useState(null)
+  const [phase, setPhase] = useState(null)
+  const [iterations, setIterations] = useState([])
+  const t0 = useRef(0)
 
   const handleSimulate = useCallback(async (config, workingMonthsOverride) => {
     setLoading(true)
     setError(null)
     setResults(null)
     setElapsed(null)
-    const t0 = performance.now()
+    setPhase(null)
+    setIterations([])
+    t0.current = performance.now()
+
     try {
-      const data = await runSimulation(config, workingMonthsOverride)
-      setResults(data)
-      setElapsed(((performance.now() - t0) / 1000).toFixed(1))
+      await runSimulationStream(config, workingMonthsOverride, {
+        onProgress(event) {
+          if (event.type === 'phase') {
+            setPhase(event.phase)
+          } else if (event.type === 'search_iter') {
+            setIterations((prev) => [...prev, event])
+          } else if (event.type === 'search_refining') {
+            setPhase('search')
+          } else if (event.type === 'search_complete') {
+            setPhase('final_sim')
+          }
+        },
+        onResult(data) {
+          setResults(data)
+          setElapsed(((performance.now() - t0.current) / 1000).toFixed(1))
+        },
+        onError(message) {
+          setError(message)
+        },
+      })
     } catch (e) {
       setError(e.message)
     } finally {
@@ -49,11 +73,7 @@ export default function App() {
         )}
 
         {loading && (
-          <div className="loading-state">
-            <div className="spinner" />
-            <h2>Running simulation&hellip;</h2>
-            <p>This may take a while depending on the number of simulations and search range.</p>
-          </div>
+          <SimulationProgress phase={phase} iterations={iterations} />
         )}
 
         {results && (
