@@ -26,18 +26,19 @@ Includes a **FastAPI backend** and **React frontend** for interactive browser-ba
 
 ```
 monte_carlo_retirement/
-├── main.py            # CLI entry point
-├── server.py          # FastAPI backend entry point
-├── config.py          # Configuration loading & Pydantic validation
-├── simulation.py      # Core Monte Carlo simulation logic
-├── plotting.py        # Matplotlib plot generation (CLI mode)
-├── utils.py           # Utility functions (logging, seeding)
-├── constants.py       # Shared constants
-├── config.json        # Default scenario configuration
-├── pyproject.toml     # Python dependencies
-└── frontend/          # React single-page app
+├── config.json            # Default scenario configuration
+├── pyproject.toml         # Python dependencies
+├── backend/               # Python backend
+│   ├── main.py            # CLI entry point
+│   ├── server.py          # FastAPI backend entry point
+│   ├── config.py          # Configuration loading & Pydantic validation
+│   ├── simulation.py      # Core Monte Carlo simulation logic
+│   ├── plotting.py        # Matplotlib plot generation (CLI mode)
+│   ├── utils.py           # Utility functions (logging, seeding)
+│   └── constants.py       # Shared constants
+└── frontend/              # React single-page app
     ├── package.json
-    ├── vite.config.js # Dev proxy → backend on :8080
+    ├── vite.config.js     # Dev proxy → backend on :8080
     ├── index.html
     └── src/
         ├── App.jsx
@@ -59,7 +60,7 @@ monte_carlo_retirement/
 uv sync
 
 # 2. Start the API server (port 8080)
-uv run python server.py
+uv run python backend/server.py
 
 # 3. In a second terminal, install and start the frontend (port 3000)
 cd frontend
@@ -72,16 +73,16 @@ Open **http://localhost:3000** in your browser. The default config loads automat
 ### Option B: CLI only
 
 ```bash
-# Default config (config.json)
-uv run python main.py
+# Default config (config.json in project root)
+uv run python backend/main.py
 
 # Custom config file
-uv run python main.py my_scenario.json
+uv run python backend/main.py my_scenario.json
 ```
 
 ## API Endpoints
 
-The FastAPI server (`server.py`) exposes the following endpoints. Interactive Swagger docs are available at `http://localhost:8080/docs`.
+The FastAPI server (`backend/server.py`) exposes the following endpoints. Interactive Swagger docs are available at `http://localhost:8080/docs`.
 
 | Method | Path | Description |
 | :----- | :--- | :---------- |

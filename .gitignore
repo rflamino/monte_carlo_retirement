@@ -71,6 +71,9 @@ Desktop.ini
 frontend/node_modules/
 frontend/dist/
 
+# Linter cache
+.ruff_cache/
+
 # Project Specific
 # generated plots
 ret_proj_*.png

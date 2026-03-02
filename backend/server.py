@@ -9,6 +9,9 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException
+
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -250,7 +253,7 @@ async def health_check():
 @app.get("/api/config/default")
 async def get_default_config():
     """Return the bundled ``config.json`` as a ready-to-use template."""
-    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    config_path = os.path.join(_PROJECT_ROOT, "config.json")
     if not os.path.exists(config_path):
         raise HTTPException(status_code=404, detail="Default config.json not found.")
     with open(config_path, "r", encoding="utf-8") as f:
@@ -297,4 +300,10 @@ async def simulate(body: SimulationRequest):
 
 if __name__ == "__main__":
     _configure_logging()
-    uvicorn.run("server:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=8080,
+        reload=True,
+        reload_dirs=[_BACKEND_DIR],
+    )
