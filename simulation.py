@@ -87,6 +87,82 @@ class RetirementMonteCarloSimulator:
             final_gross_withdrawal,
         )
 
+    def _rebalance_portfolio(
+        self,
+        bal_inv1: float,
+        cb_inv1: float,
+        bal_inv2: float,
+        cb_inv2: float,
+    ) -> Tuple[float, float, float, float]:
+        """
+        Rebalances the two-asset portfolio to target allocations, applying
+        realized gains taxes on any sales required for rebalancing.
+
+        Returns (new_bal_inv1, new_cb_inv1, new_bal_inv2, new_cb_inv2).
+        """
+        p = self.params_model
+        total_balance = bal_inv1 + bal_inv2
+
+        if total_balance <= SMALL_EPSILON:
+            return bal_inv1, cb_inv1, bal_inv2, cb_inv2
+
+        target_bal1 = total_balance * p.allocation_inv1_pct
+        amount_to_sell_inv1 = 0.0
+        amount_to_sell_inv2 = 0.0
+        tax_from_rebalancing = 0.0
+
+        if bal_inv1 > target_bal1 + SMALL_EPSILON:
+            amount_to_sell_inv1 = bal_inv1 - target_bal1
+            if (
+                p.inv1_use_realized_gains_tax_system
+                and p.inv1_realized_gains_tax_rate > 0
+                and amount_to_sell_inv1 > 0
+            ):
+                gain = max(0, bal_inv1 - cb_inv1)
+                if gain > 0 and bal_inv1 > SMALL_EPSILON:
+                    prop_sold = amount_to_sell_inv1 / bal_inv1
+                    tax_from_rebalancing = (
+                        gain * prop_sold * p.inv1_realized_gains_tax_rate
+                    )
+
+        elif bal_inv1 < target_bal1 - SMALL_EPSILON:
+            target_bal2 = total_balance * p.allocation_inv2_pct
+            amount_to_sell_inv2 = bal_inv2 - target_bal2
+            if (
+                p.inv2_use_realized_gains_tax_system
+                and p.inv2_realized_gains_tax_rate > 0
+                and amount_to_sell_inv2 > 0
+            ):
+                gain = max(0, bal_inv2 - cb_inv2)
+                if gain > 0 and bal_inv2 > SMALL_EPSILON:
+                    prop_sold = amount_to_sell_inv2 / bal_inv2
+                    tax_from_rebalancing = (
+                        gain * prop_sold * p.inv2_realized_gains_tax_rate
+                    )
+
+        total_after_tax = total_balance - tax_from_rebalancing
+        new_bal_inv1 = total_after_tax * p.allocation_inv1_pct
+        new_bal_inv2 = total_after_tax * p.allocation_inv2_pct
+
+        total_cb = cb_inv1 + cb_inv2
+        if amount_to_sell_inv1 > 0 and bal_inv1 > SMALL_EPSILON:
+            prop_sold = amount_to_sell_inv1 / bal_inv1
+            total_cb = total_cb - (cb_inv1 * prop_sold) + amount_to_sell_inv1
+        elif amount_to_sell_inv2 > 0 and bal_inv2 > SMALL_EPSILON:
+            prop_sold = amount_to_sell_inv2 / bal_inv2
+            total_cb = total_cb - (cb_inv2 * prop_sold) + amount_to_sell_inv2
+
+        new_cb_inv1 = min(
+            total_cb * p.allocation_inv1_pct,
+            new_bal_inv1 if new_bal_inv1 > 0 else 0,
+        )
+        new_cb_inv2 = min(
+            total_cb * p.allocation_inv2_pct,
+            new_bal_inv2 if new_bal_inv2 > 0 else 0,
+        )
+
+        return new_bal_inv1, new_cb_inv1, new_bal_inv2, new_cb_inv2
+
     def _run_single_simulation_path(
         self, working_months: int, path_seed: int
     ) -> Dict[str, Union[float, List[float]]]:
@@ -169,96 +245,10 @@ class RetirementMonteCarloSimulator:
             contrib_inv1_tax_year += contrib_m_inv1
             contrib_inv2_tax_year += contrib_m_inv2
 
-            # --- Rebalancing with potential realized gains tax ---
-            bal1_pre_rebal, cb1_pre_rebal = balance_inv1, cost_basis_inv1
-            bal2_pre_rebal, cb2_pre_rebal = balance_inv2, cost_basis_inv2
-            total_balance_pre_rebal = bal1_pre_rebal + bal2_pre_rebal
-            tax_from_rebalancing = 0.0
-
-            if total_balance_pre_rebal > SMALL_EPSILON:
-                target_bal1_ideal = total_balance_pre_rebal * p.allocation_inv1_pct
-                amount_to_sell_from_inv1 = 0.0
-                amount_to_sell_from_inv2 = 0.0
-
-                if (
-                    bal1_pre_rebal > target_bal1_ideal + SMALL_EPSILON
-                ):  # Inv1 is overweight
-                    amount_to_sell_from_inv1 = bal1_pre_rebal - target_bal1_ideal
-                    if (
-                        p.inv1_use_realized_gains_tax_system
-                        and p.inv1_realized_gains_tax_rate > 0
-                        and amount_to_sell_from_inv1 > 0
-                    ):
-                        gain_in_inv1 = max(0, bal1_pre_rebal - cb1_pre_rebal)
-                        if gain_in_inv1 > 0 and bal1_pre_rebal > SMALL_EPSILON:
-                            proportion_of_inv1_value_sold = (
-                                amount_to_sell_from_inv1 / bal1_pre_rebal
-                            )
-                            realized_gain = gain_in_inv1 * proportion_of_inv1_value_sold
-                            tax_from_rebalancing = (
-                                realized_gain * p.inv1_realized_gains_tax_rate
-                            )
-
-                elif (
-                    bal1_pre_rebal < target_bal1_ideal - SMALL_EPSILON
-                ):  # Inv2 is overweight
-                    # Corrected logic: Calculate target first, then subtract to find sell amount
-                    target_bal2_ideal = total_balance_pre_rebal * p.allocation_inv2_pct
-                    amount_to_sell_from_inv2 = bal2_pre_rebal - target_bal2_ideal
-
-                    if (
-                        p.inv2_use_realized_gains_tax_system
-                        and p.inv2_realized_gains_tax_rate > 0
-                        and amount_to_sell_from_inv2 > 0
-                    ):
-                        gain_in_inv2 = max(0, bal2_pre_rebal - cb2_pre_rebal)
-                        if gain_in_inv2 > 0 and bal2_pre_rebal > SMALL_EPSILON:
-                            proportion_of_inv2_value_sold = (
-                                amount_to_sell_from_inv2 / bal2_pre_rebal
-                            )
-                            realized_gain = gain_in_inv2 * proportion_of_inv2_value_sold
-                            tax_from_rebalancing = (
-                                realized_gain * p.inv2_realized_gains_tax_rate
-                            )
-
-                total_balance_after_rebal_tax = (
-                    total_balance_pre_rebal - tax_from_rebalancing
+            balance_inv1, cost_basis_inv1, balance_inv2, cost_basis_inv2 = (
+                self._rebalance_portfolio(
+                    balance_inv1, cost_basis_inv1, balance_inv2, cost_basis_inv2
                 )
-
-                # Update balances to target allocations of the new total
-                balance_inv1 = total_balance_after_rebal_tax * p.allocation_inv1_pct
-                balance_inv2 = total_balance_after_rebal_tax * p.allocation_inv2_pct
-
-                # Adjust cost basis:
-                # The total cost basis is preserved unless tax reduces the overall value more than gains.
-                # Simpler: re-apportion total cost basis. First, reduce CB of sold asset proportionally.
-                current_total_cost_basis = cb1_pre_rebal + cb2_pre_rebal
-                if amount_to_sell_from_inv1 > 0 and bal1_pre_rebal > SMALL_EPSILON:
-                    prop_sold = amount_to_sell_from_inv1 / bal1_pre_rebal
-                    cb_reduction = cb1_pre_rebal * prop_sold
-                    current_total_cost_basis -= (
-                        cb_reduction  # Part of CB is "used up" by sale
-                    )
-                    current_total_cost_basis += (
-                        amount_to_sell_from_inv1  # And "transferred"
-                    )
-                elif amount_to_sell_from_inv2 > 0 and bal2_pre_rebal > SMALL_EPSILON:
-                    prop_sold = amount_to_sell_from_inv2 / bal2_pre_rebal
-                    cb_reduction = cb2_pre_rebal * prop_sold
-                    current_total_cost_basis -= cb_reduction
-                    current_total_cost_basis += amount_to_sell_from_inv2
-
-                # Apportion the (potentially adjusted by sale) total cost basis
-                cost_basis_inv1 = current_total_cost_basis * p.allocation_inv1_pct
-                cost_basis_inv2 = current_total_cost_basis * p.allocation_inv2_pct
-            else:  # No rebalancing if total balance is zero
-                pass  # Balances and cost basis remain as they were
-
-            cost_basis_inv1 = min(
-                cost_basis_inv1, balance_inv1 if balance_inv1 > 0 else 0
-            )
-            cost_basis_inv2 = min(
-                cost_basis_inv2, balance_inv2 if balance_inv2 > 0 else 0
             )
 
             if m_idx % MONTHS_PER_YEAR == 0 or m_idx == working_months:
@@ -548,109 +538,10 @@ class RetirementMonteCarloSimulator:
                     cost_basis_inv2, balance_inv2 if balance_inv2 > 0 else 0
                 )
 
-                # --- Rebalancing after withdrawal (same logic as in accumulation) ---
-                bal1_pre_rebal_ret, cb1_pre_rebal_ret = balance_inv1, cost_basis_inv1
-                bal2_pre_rebal_ret, cb2_pre_rebal_ret = balance_inv2, cost_basis_inv2
-                total_balance_pre_rebal_ret = bal1_pre_rebal_ret + bal2_pre_rebal_ret
-                tax_from_rebalancing_ret = 0.0
-
-                if total_balance_pre_rebal_ret > SMALL_EPSILON:
-                    target_bal1_ideal_ret = (
-                        total_balance_pre_rebal_ret * p.allocation_inv1_pct
+                balance_inv1, cost_basis_inv1, balance_inv2, cost_basis_inv2 = (
+                    self._rebalance_portfolio(
+                        balance_inv1, cost_basis_inv1, balance_inv2, cost_basis_inv2
                     )
-                    amount_to_sell_from_inv1_ret = 0.0
-                    amount_to_sell_from_inv2_ret = 0.0
-
-                    if (
-                        bal1_pre_rebal_ret > target_bal1_ideal_ret + SMALL_EPSILON
-                    ):  # Inv1 is overweight
-                        amount_to_sell_from_inv1_ret = (
-                            bal1_pre_rebal_ret - target_bal1_ideal_ret
-                        )
-                        if (
-                            p.inv1_use_realized_gains_tax_system
-                            and p.inv1_realized_gains_tax_rate > 0
-                            and amount_to_sell_from_inv1_ret > 0
-                        ):
-                            gain_in_inv1 = max(
-                                0, bal1_pre_rebal_ret - cb1_pre_rebal_ret
-                            )
-                            if gain_in_inv1 > 0 and bal1_pre_rebal_ret > SMALL_EPSILON:
-                                prop_sold = (
-                                    amount_to_sell_from_inv1_ret / bal1_pre_rebal_ret
-                                )
-                                realized_gain = gain_in_inv1 * prop_sold
-                                tax_from_rebalancing_ret = (
-                                    realized_gain * p.inv1_realized_gains_tax_rate
-                                )
-                    elif (
-                        bal1_pre_rebal_ret < target_bal1_ideal_ret - SMALL_EPSILON
-                    ):  # Inv2 is overweight
-                        target_bal2_ideal_ret = (
-                            total_balance_pre_rebal_ret * p.allocation_inv2_pct
-                        )
-                        amount_to_sell_from_inv2_ret = (
-                            bal2_pre_rebal_ret - target_bal2_ideal_ret
-                        )
-                        if (
-                            p.inv2_use_realized_gains_tax_system
-                            and p.inv2_realized_gains_tax_rate > 0
-                            and amount_to_sell_from_inv2_ret > 0
-                        ):
-                            gain_in_inv2 = max(
-                                0, bal2_pre_rebal_ret - cb2_pre_rebal_ret
-                            )
-                            if gain_in_inv2 > 0 and bal2_pre_rebal_ret > SMALL_EPSILON:
-                                prop_sold = (
-                                    amount_to_sell_from_inv2_ret / bal2_pre_rebal_ret
-                                )
-                                realized_gain = gain_in_inv2 * prop_sold
-                                tax_from_rebalancing_ret = (
-                                    realized_gain * p.inv2_realized_gains_tax_rate
-                                )
-
-                    total_balance_after_rebal_tax_ret = (
-                        total_balance_pre_rebal_ret - tax_from_rebalancing_ret
-                    )
-                    balance_inv1 = (
-                        total_balance_after_rebal_tax_ret * p.allocation_inv1_pct
-                    )
-                    balance_inv2 = (
-                        total_balance_after_rebal_tax_ret * p.allocation_inv2_pct
-                    )
-
-                    current_total_cost_basis_ret = cb1_pre_rebal_ret + cb2_pre_rebal_ret
-                    if (
-                        amount_to_sell_from_inv1_ret > 0
-                        and bal1_pre_rebal_ret > SMALL_EPSILON
-                    ):
-                        prop_sold = amount_to_sell_from_inv1_ret / bal1_pre_rebal_ret
-                        cb_reduction = cb1_pre_rebal_ret * prop_sold
-                        current_total_cost_basis_ret = (
-                            current_total_cost_basis_ret - cb_reduction
-                        ) + amount_to_sell_from_inv1_ret  # Simplified CB transfer
-                    elif (
-                        amount_to_sell_from_inv2_ret > 0
-                        and bal2_pre_rebal_ret > SMALL_EPSILON
-                    ):
-                        prop_sold = amount_to_sell_from_inv2_ret / bal2_pre_rebal_ret
-                        cb_reduction = cb2_pre_rebal_ret * prop_sold
-                        current_total_cost_basis_ret = (
-                            current_total_cost_basis_ret - cb_reduction
-                        ) + amount_to_sell_from_inv2_ret
-
-                    cost_basis_inv1 = (
-                        current_total_cost_basis_ret * p.allocation_inv1_pct
-                    )
-                    cost_basis_inv2 = (
-                        current_total_cost_basis_ret * p.allocation_inv2_pct
-                    )
-
-                cost_basis_inv1 = min(
-                    cost_basis_inv1, balance_inv1 if balance_inv1 > 0 else 0
-                )
-                cost_basis_inv2 = min(
-                    cost_basis_inv2, balance_inv2 if balance_inv2 > 0 else 0
                 )
 
                 total_balance_after_withdrawal_and_rebalance = (

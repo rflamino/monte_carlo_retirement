@@ -1,10 +1,9 @@
 import sys
 import datetime as _dt
 import multiprocessing
-from typing import Optional
 from loguru import logger
 
-from config import Config, load_config_from_json
+from config import Config, ConfigurationError, load_config_from_json
 from utils import log_input_parameters, log_simulation_results
 from simulation import RetirementMonteCarloSimulator
 from plotting import plot_simulation_results, plot_portfolio_trajectories
@@ -48,16 +47,17 @@ def main():
         )
 
     logger.info(f"Loading configuration from: {json_filename}")
-    config_dict = load_config_from_json(json_filename)
-
-    config: Optional[Config] = None
     try:
+        config_dict = load_config_from_json(json_filename)
         config = Config(**config_dict)
         logger.info(
             f"Configuration for scenario '{config.Nickname}' loaded and validated successfully."
         )
+    except ConfigurationError as e:
+        logger.error(f"Configuration file error: {e}")
+        return
     except Exception as e:
-        logger.error(f"Configuration error: {e}", exc_info=True)
+        logger.error(f"Configuration validation error: {e}", exc_info=True)
         return
 
     log_input_parameters(config)

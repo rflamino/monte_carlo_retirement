@@ -38,7 +38,7 @@ The project is modularized into the following components:
 ## Usage
 
 ### 1. Default Execution
-By default, the script looks for a file named `monte_carlo_retirement.json` in the same directory.
+By default, the script looks for a file named `config.json` in the same directory.
 
 ```bash
 uv run python main.py

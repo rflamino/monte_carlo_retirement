@@ -1,13 +1,12 @@
 import os
-import sys
 import json
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator, ValidationInfo
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, ValidationInfo
 from loguru import logger
-import warnings
 
-# Suppress Pydantic user warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+
+class ConfigurationError(Exception):
+    """Raised when the configuration file cannot be loaded or parsed."""
 
 
 class OtherIncomeStreamConfig(BaseModel):
@@ -36,9 +35,8 @@ class OtherIncomeStreamConfig(BaseModel):
     tax_rate: float = Field(
         ..., ge=0.0, le=1.0, description="Tax rate applied to this income stream."
     )
-    # Store the pre-calculated nominal value if not inflation_indexed, or the T=0 real value if it is
-    _nominal_fixed_monthly_amount: Optional[float] = None
-    _master_inflation_at_start: Optional[float] = None
+    _nominal_fixed_monthly_amount: Optional[float] = PrivateAttr(default=None)
+    _master_inflation_at_start: Optional[float] = PrivateAttr(default=None)
 
 
 class Config(BaseModel):
@@ -112,15 +110,16 @@ class Config(BaseModel):
 def load_config_from_json(file_path: str) -> Dict[str, Any]:
     """Loads and returns the configuration dictionary from a JSON file."""
     if not os.path.exists(file_path):
-        logger.error(f"Configuration file not found at: {file_path}")
-        sys.exit(1)
+        raise ConfigurationError(f"Configuration file not found at: {file_path}")
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError as e:
-        logger.error(f"Error parsing JSON file '{file_path}': {e}")
-        sys.exit(1)
+        raise ConfigurationError(
+            f"Error parsing JSON file '{file_path}': {e}"
+        ) from e
     except Exception as e:
-        logger.error(f"Unexpected error reading config file: {e}")
-        sys.exit(1)
+        raise ConfigurationError(
+            f"Unexpected error reading config file '{file_path}': {e}"
+        ) from e
