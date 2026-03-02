@@ -5,9 +5,11 @@ description = "Monte Carlo simulation tool designed to project portfolio longevi
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.115.0",
     "loguru>=0.7.3",
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
     "pandas>=3.0.0",
     "pydantic>=2.12.5",
+    "uvicorn[standard]>=0.34.0",
 ]
