@@ -86,8 +86,13 @@ export default function App() {
             {results.trajectory && (
               <TrajectoryChart
                 trajectory={results.trajectory}
-                workingMonths={results.summary.required_working_months}
-                referenceLines={results.reference_lines}
+                referenceLines={
+                  results.reference_lines?.length
+                    ? results.reference_lines
+                    : results.summary?.required_working_years != null
+                      ? [{ name: 'Retirement Starts', year: results.summary.required_working_years }]
+                      : []
+                }
               />
             )}
             <HistogramChart

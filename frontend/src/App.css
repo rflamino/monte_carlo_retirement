@@ -534,6 +534,15 @@ body {
   color: #1e293b;
 }
 
+/* Trajectory chart legend spacing */
+.trajectory-chart-card .recharts-legend-item {
+  margin-right: 20px;
+}
+
+.trajectory-chart-card .recharts-legend-item:last-child {
+  margin-right: 0;
+}
+
 /* ===== Responsive ===== */
 @media (max-width: 860px) {
   .app-layout {

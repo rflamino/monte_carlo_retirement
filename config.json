@@ -22,7 +22,7 @@
         "inflation_rate_mean": 0.062, 
         "inflation_rate_volatility": 0.0235, 
 
-        "num_simulations_main": 3000,
+        "num_simulations_main": 1000,
         "num_simulations_search": 300, 
         "target_probability": 97.0, 
         "starting_working_months_search": 0, 

@@ -372,6 +372,7 @@ def _build_result(
 
     retirement_year = round(required_w_months / MONTHS_PER_YEAR, 1)
     reference_lines = []
+    reference_lines.append({"name": "Retirement Starts", "year": retirement_year})
     for stream in (config.other_income_streams or []):
         start_yr = round(retirement_year + stream.start_after_retirement_years, 1)
         reference_lines.append({

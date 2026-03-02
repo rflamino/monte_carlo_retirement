@@ -63,25 +63,48 @@ const REF_LINE_COLORS = [
   '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5',
 ]
 
-export default function TrajectoryChart({ trajectory, workingMonths, referenceLines = [] }) {
+const YEAR_NEAR_THRESHOLD = 0.6
+
+function groupReferenceLinesByYear(lines) {
+  const groups = []
+  const sorted = [...lines].sort((a, b) => a.year - b.year)
+  for (const rl of sorted) {
+    const existing = groups.find((g) => Math.abs(g.year - rl.year) < YEAR_NEAR_THRESHOLD)
+    if (existing) {
+      existing.names.push(rl.name)
+    } else {
+      groups.push({ year: rl.year, names: [rl.name] })
+    }
+  }
+  return groups.map((g) => ({
+    year: Math.round(g.year * 10) / 10,
+    label: g.names.length > 1 ? `${g.names.join(', ')} (yr ${g.year.toFixed(1)})` : `${g.names[0]} (yr ${g.year.toFixed(1)})`,
+    isRetirement: g.names.some((n) => n === 'Retirement Starts'),
+    index: groups.indexOf(g),
+  }))
+}
+
+export default function TrajectoryChart({ trajectory, referenceLines = [] }) {
   if (!trajectory) return null
 
   const data = buildChartData(trajectory)
-  const retirementYear = workingMonths / 12
   const maxYear = data.at(-1)?.year ?? 0
+  const groupedLines = groupReferenceLinesByYear(referenceLines)
   const sampleKeys = trajectory.sample_paths
     ? trajectory.sample_paths.map((_, i) => `s${i}`)
     : []
 
   return (
-    <div className="card chart-card">
+    <div className="card chart-card trajectory-chart-card">
       <h3>Portfolio Trajectories</h3>
       <ResponsiveContainer width="100%" height={420}>
-        <ComposedChart data={data} margin={{ top: 24, right: 20, bottom: 20, left: 20 }}>
+        <ComposedChart data={data} margin={{ top: 32, right: 24, bottom: 48, left: 24 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
           <XAxis
             dataKey="year"
-            label={{ value: 'Years from Start', position: 'insideBottom', offset: -10, fontSize: 12 }}
+            type="number"
+            domain={[0, maxYear]}
+            label={{ value: 'Years from Start', position: 'insideBottom', offset: -8, fontSize: 12 }}
             tick={{ fontSize: 11 }}
           />
           <YAxis
@@ -155,42 +178,33 @@ export default function TrajectoryChart({ trajectory, workingMonths, referenceLi
             name="Median (P50)"
           />
 
-          {retirementYear > 0 && retirementYear < maxYear && (
-            <ReferenceLine
-              x={retirementYear}
-              stroke="#0f172a"
-              strokeDasharray="6 3"
-              strokeWidth={1.5}
-              label={{
-                value: `Retirement (yr ${retirementYear.toFixed(1)})`,
-                position: 'top',
-                fontSize: 10,
-                fill: '#0f172a',
-              }}
-            />
-          )}
-
-          {referenceLines.map((rl, i) => {
-            if (rl.year <= 0 || rl.year >= maxYear) return null
-            const color = REF_LINE_COLORS[i % REF_LINE_COLORS.length]
+          {groupedLines.map((g, i) => {
+            if (g.year <= 0 || g.year >= maxYear) return null
+            const stroke = g.isRetirement ? '#0f172a' : REF_LINE_COLORS[i % REF_LINE_COLORS.length]
             return (
               <ReferenceLine
-                key={rl.name}
-                x={rl.year}
-                stroke={color}
-                strokeDasharray={rl.year === retirementYear ? undefined : '4 2'}
+                key={`ref-${g.year}-${i}`}
+                x={g.year}
+                stroke={stroke}
+                strokeDasharray={g.isRetirement ? '6 3' : '4 2'}
                 strokeWidth={1.5}
+                ifOverflow="extendDomain"
                 label={{
-                  value: `${rl.name} (yr ${rl.year})`,
+                  value: g.label,
                   position: 'top',
                   fontSize: 10,
-                  fill: color,
+                  fill: stroke,
                 }}
               />
             )
           })}
 
-          <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+          <Legend
+            wrapperStyle={{ fontSize: 11, paddingTop: 20, paddingBottom: 4 }}
+            layout="horizontal"
+            align="center"
+            verticalAlign="bottom"
+          />
         </ComposedChart>
       </ResponsiveContainer>
     </div>
