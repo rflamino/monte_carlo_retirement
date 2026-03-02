@@ -87,6 +87,7 @@ export default function App() {
               <TrajectoryChart
                 trajectory={results.trajectory}
                 workingMonths={results.summary.required_working_months}
+                referenceLines={results.reference_lines}
               />
             )}
             <HistogramChart

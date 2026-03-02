@@ -59,11 +59,16 @@ function CustomTooltip({ active, payload }) {
   )
 }
 
-export default function TrajectoryChart({ trajectory, workingMonths }) {
+const REF_LINE_COLORS = [
+  '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5',
+]
+
+export default function TrajectoryChart({ trajectory, workingMonths, referenceLines = [] }) {
   if (!trajectory) return null
 
   const data = buildChartData(trajectory)
   const retirementYear = workingMonths / 12
+  const maxYear = data.at(-1)?.year ?? 0
   const sampleKeys = trajectory.sample_paths
     ? trajectory.sample_paths.map((_, i) => `s${i}`)
     : []
@@ -72,7 +77,7 @@ export default function TrajectoryChart({ trajectory, workingMonths }) {
     <div className="card chart-card">
       <h3>Portfolio Trajectories</h3>
       <ResponsiveContainer width="100%" height={420}>
-        <ComposedChart data={data} margin={{ top: 10, right: 20, bottom: 20, left: 20 }}>
+        <ComposedChart data={data} margin={{ top: 24, right: 20, bottom: 20, left: 20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
           <XAxis
             dataKey="year"
@@ -150,7 +155,7 @@ export default function TrajectoryChart({ trajectory, workingMonths }) {
             name="Median (P50)"
           />
 
-          {retirementYear > 0 && retirementYear < (data.at(-1)?.year ?? 0) && (
+          {retirementYear > 0 && retirementYear < maxYear && (
             <ReferenceLine
               x={retirementYear}
               stroke="#0f172a"
@@ -159,11 +164,31 @@ export default function TrajectoryChart({ trajectory, workingMonths }) {
               label={{
                 value: `Retirement (yr ${retirementYear.toFixed(1)})`,
                 position: 'top',
-                fontSize: 11,
+                fontSize: 10,
                 fill: '#0f172a',
               }}
             />
           )}
+
+          {referenceLines.map((rl, i) => {
+            if (rl.year <= 0 || rl.year >= maxYear) return null
+            const color = REF_LINE_COLORS[i % REF_LINE_COLORS.length]
+            return (
+              <ReferenceLine
+                key={rl.name}
+                x={rl.year}
+                stroke={color}
+                strokeDasharray={rl.year === retirementYear ? undefined : '4 2'}
+                strokeWidth={1.5}
+                label={{
+                  value: `${rl.name} (yr ${rl.year})`,
+                  position: 'top',
+                  fontSize: 10,
+                  fill: color,
+                }}
+              />
+            )
+          })}
 
           <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
         </ComposedChart>

@@ -48,11 +48,17 @@ class HistogramData(BaseModel):
     start_balances: List[float]
 
 
+class ReferenceLineData(BaseModel):
+    name: str
+    year: float
+
+
 class SimulationResponse(BaseModel):
     scenario: str
     summary: SimulationSummary
     trajectory: Optional[TrajectoryData] = None
     histogram: HistogramData
+    reference_lines: List[ReferenceLineData] = []
 
 
 # ---------------------------------------------------------------------------
@@ -166,80 +172,7 @@ def _run_simulation(
         f"({config.num_simulations_main} sims, {required_w_months} working months)"
     )
 
-    summary_df, traj_pct_df, sample_trajectories = (
-        simulator.run_monte_carlo_simulations(
-            working_months=required_w_months,
-            num_simulations=config.num_simulations_main,
-        )
-    )
-
-    if summary_df.empty:
-        raise ValueError(f"Simulation for '{config.Nickname}' yielded no results.")
-
-    # ---- summary statistics ----
-    success_prob = (summary_df["Final Balance"] > SMALL_EPSILON).mean() * 100.0
-    successful = summary_df.loc[
-        summary_df["Final Balance"] > SMALL_EPSILON, "Final Balance"
-    ]
-    median_final = float(successful.median()) if not successful.empty else 0.0
-    median_start = float(summary_df["Start Balance"].median())
-
-    annual_expenses_t0 = config.monthly_expenses * MONTHS_PER_YEAR
-    swr = (
-        (annual_expenses_t0 * 100.0) / median_start
-        if median_start > SMALL_EPSILON
-        else float("nan")
-    )
-
-    pct_raw = summary_df["Final Balance"].quantile(
-        [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
-    )
-    balance_percentiles = {
-        f"p{int(k * 100)}": round(max(0.0, float(v)), 2)
-        for k, v in pct_raw.items()
-    }
-
-    # ---- trajectory data ----
-    trajectory_data = None
-    if traj_pct_df is not None and not traj_pct_df.empty:
-        years = list(range(len(traj_pct_df)))
-        pct_dict: Dict[str, List[float]] = {}
-        for col in traj_pct_df.columns:
-            pct_dict[f"p{int(col * 100)}"] = [
-                round(float(v), 2) for v in traj_pct_df[col]
-            ]
-        trajectory_data = {
-            "years": years,
-            "percentiles": pct_dict,
-            "sample_paths": (
-                [[round(float(v), 2) for v in path] for path in sample_trajectories]
-                if sample_trajectories
-                else []
-            ),
-        }
-
-    return {
-        "scenario": config.Nickname,
-        "summary": {
-            "required_working_months": required_w_months,
-            "required_working_years": round(required_w_months / MONTHS_PER_YEAR, 1),
-            "success_probability": round(float(success_prob), 2),
-            "target_probability": config.target_probability,
-            "median_start_balance": round(median_start, 2),
-            "median_final_balance_successful": round(median_final, 2),
-            "swr": _safe_float(swr),
-            "final_balance_percentiles": balance_percentiles,
-        },
-        "trajectory": trajectory_data,
-        "histogram": {
-            "final_balances": [
-                round(float(v), 2) for v in summary_df["Final Balance"]
-            ],
-            "start_balances": [
-                round(float(v), 2) for v in summary_df["Start Balance"]
-            ],
-        },
-    }
+    return _build_result(config, simulator, required_w_months)
 
 
 # ---------------------------------------------------------------------------
@@ -437,11 +370,20 @@ def _build_result(
             ),
         }
 
+    retirement_year = round(required_w_months / MONTHS_PER_YEAR, 1)
+    reference_lines = []
+    for stream in (config.other_income_streams or []):
+        start_yr = round(retirement_year + stream.start_after_retirement_years, 1)
+        reference_lines.append({
+            "name": stream.name,
+            "year": start_yr,
+        })
+
     return {
         "scenario": config.Nickname,
         "summary": {
             "required_working_months": required_w_months,
-            "required_working_years": round(required_w_months / MONTHS_PER_YEAR, 1),
+            "required_working_years": retirement_year,
             "success_probability": round(float(success_prob), 2),
             "target_probability": config.target_probability,
             "median_start_balance": round(median_start, 2),
@@ -458,6 +400,7 @@ def _build_result(
                 round(float(v), 2) for v in summary_df["Start Balance"]
             ],
         },
+        "reference_lines": reference_lines,
     }
 
 
