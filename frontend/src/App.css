@@ -217,6 +217,14 @@ body {
   grid-column: 1 / -1;
 }
 
+.cfg-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 16px;
+}
+
 .cfg-label {
   font-size: 11px;
   font-weight: 500;
@@ -224,12 +232,81 @@ body {
   display: flex;
   align-items: baseline;
   gap: 6px;
+  min-width: 0;
 }
 
 .cfg-hint {
   font-weight: 400;
   color: #94a3b8;
   font-size: 10px;
+}
+
+.cfg-tip {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.cfg-tip-btn {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: inherit;
+  line-height: 1;
+  padding: 0;
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.cfg-tip-btn:hover,
+.cfg-tip-btn:focus-visible,
+.cfg-tip-btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+  outline: none;
+}
+
+.cfg-tip-balloon {
+  position: fixed;
+  z-index: 10000;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  padding: 8px 11px;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
+  pointer-events: auto;
+  width: max-content;
+  text-align: left;
+}
+
+.cfg-tip-balloon::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+}
+
+.cfg-tip-balloon.above::after {
+  top: 100%;
+  border-top-color: #0f172a;
+}
+
+.cfg-tip-balloon.below::after {
+  bottom: 100%;
+  border-bottom-color: #0f172a;
 }
 
 .cfg-input {

@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useId } from 'react'
+import { createPortal } from 'react-dom'
 import { getDefaultConfig } from '../api'
 
 const EMPTY_STREAM = {
@@ -14,13 +15,138 @@ function cloneConfig(cfg) {
   return JSON.parse(JSON.stringify(cfg))
 }
 
-function Field({ label, hint, children, wide }) {
+function TipBalloon({ text }) {
+  const [open, setOpen] = useState(false)
+  const [pinned, setPinned] = useState(false)
+  const [coords, setCoords] = useState(null)
+  const btnRef = useRef(null)
+  const tipId = useId()
+
+  const place = () => {
+    const el = btnRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const pad = 10
+    const maxW = Math.min(280, window.innerWidth - pad * 2)
+    let left = r.left + r.width / 2
+    left = Math.max(pad + maxW / 2, Math.min(left, window.innerWidth - pad - maxW / 2))
+    const spaceAbove = r.top
+    const placeBelow = spaceAbove < 96
+    setCoords({
+      left,
+      top: placeBelow ? r.bottom + 8 : r.top - 8,
+      below: placeBelow,
+      maxW,
+    })
+  }
+
+  const show = () => {
+    place()
+    setOpen(true)
+  }
+
+  const hide = () => {
+    if (!pinned) setOpen(false)
+  }
+
+  const togglePin = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (pinned) {
+      setPinned(false)
+      setOpen(false)
+    } else {
+      place()
+      setPinned(true)
+      setOpen(true)
+    }
+  }
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onScroll = () => place()
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') {
+        setPinned(false)
+        setOpen(false)
+      }
+    }
+    const onDoc = (ev) => {
+      if (
+        pinned &&
+        btnRef.current &&
+        !btnRef.current.contains(ev.target) &&
+        !(ev.target instanceof Element && ev.target.closest('.cfg-tip-balloon'))
+      ) {
+        setPinned(false)
+        setOpen(false)
+      }
+    }
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onScroll)
+    window.addEventListener('keydown', onKey)
+    document.addEventListener('mousedown', onDoc)
+    return () => {
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onScroll)
+      window.removeEventListener('keydown', onKey)
+      document.removeEventListener('mousedown', onDoc)
+    }
+  }, [open, pinned])
+
+  return (
+    <span className="cfg-tip">
+      <button
+        ref={btnRef}
+        type="button"
+        className={'cfg-tip-btn' + (open ? ' active' : '')}
+        aria-label="Field help"
+        aria-describedby={open ? tipId : undefined}
+        aria-expanded={open}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onClick={togglePin}
+      >
+        ?
+      </button>
+      {open &&
+        coords &&
+        createPortal(
+          <div
+            id={tipId}
+            role="tooltip"
+            className={'cfg-tip-balloon' + (coords.below ? ' below' : ' above')}
+            style={{
+              left: coords.left,
+              top: coords.top,
+              maxWidth: coords.maxW,
+              transform: coords.below
+                ? 'translate(-50%, 0)'
+                : 'translate(-50%, -100%)',
+            }}
+            onMouseEnter={() => setOpen(true)}
+            onMouseLeave={hide}
+          >
+            {text}
+          </div>,
+          document.body,
+        )}
+    </span>
+  )
+}
+
+function Field({ label, hint, tip, children, wide }) {
   return (
     <div className={'cfg-field' + (wide ? ' cfg-field-wide' : '')}>
-      <label className="cfg-label">
-        {label}
-        {hint && <span className="cfg-hint">{hint}</span>}
-      </label>
+      <div className="cfg-label-row">
+        <label className="cfg-label">
+          {label}
+          {hint && <span className="cfg-hint">{hint}</span>}
+        </label>
+        {tip && <TipBalloon text={tip} />}
+      </div>
       {children}
     </div>
   )
@@ -377,7 +503,11 @@ export default function ConfigEditor({ onSimulate, loading }) {
             onToggle={toggleSection}
           >
             <div className="cfg-grid">
-              <Field label="Name" wide>
+              <Field
+                label="Name"
+                wide
+                tip="Nickname for this scenario. Used in charts, logs, and the saved JSON filename."
+              >
                 <input
                   className="cfg-input"
                   type="text"
@@ -385,14 +515,21 @@ export default function ConfigEditor({ onSimulate, loading }) {
                   onChange={(e) => update('scenario', e.target.value)}
                 />
               </Field>
-              <Field label="Retirement years">
+              <Field
+                label="Retirement years"
+                tip="How many years of retirement (decumulation) to simulate after you stop working."
+              >
                 <NumberInput
                   value={config.retirement_years}
                   min={1}
                   onChange={(v) => update('retirement_years', v ?? 1)}
                 />
               </Field>
-              <Field label="Target success" hint="probability">
+              <Field
+                label="Target success"
+                hint="probability"
+                tip="Target probability of not running out of money. The search finds the minimum working months needed to reach this rate."
+              >
                 <PercentInput
                   value={(config.target_probability ?? 0) / 100}
                   max={100}
@@ -409,25 +546,39 @@ export default function ConfigEditor({ onSimulate, loading }) {
             onToggle={toggleSection}
           >
             <div className="cfg-grid">
-              <Field label="Initial balance">
+              <Field
+                label="Initial balance"
+                tip="Total portfolio value today (time = 0), split across Asset 1 and Asset 2 by allocation."
+              >
                 <MoneyInput
                   value={config.initial_balance}
                   onChange={(v) => update('initial_balance', v ?? 0)}
                 />
               </Field>
-              <Field label="Monthly contribution">
+              <Field
+                label="Monthly contribution"
+                tip="Amount saved into the portfolio each month while working. Starts at this value and can grow annually."
+              >
                 <MoneyInput
                   value={config.monthly_contribution}
                   onChange={(v) => update('monthly_contribution', v ?? 0)}
                 />
               </Field>
-              <Field label="Contribution growth" hint="annual">
+              <Field
+                label="Contribution growth"
+                hint="annual"
+                tip="Annual percentage increase applied to your monthly contribution at the start of each working year (e.g. raises)."
+              >
                 <PercentInput
                   value={config.contribution_growth_rate_annual}
                   onChange={(v) => update('contribution_growth_rate_annual', v ?? 0)}
                 />
               </Field>
-              <Field label="Monthly expenses" hint="today’s $">
+              <Field
+                label="Monthly expenses"
+                hint="today’s $"
+                tip="Retirement spending in today’s purchasing power. Inflated to future dollars during the simulation."
+              >
                 <MoneyInput
                   value={config.monthly_expenses}
                   onChange={(v) => update('monthly_expenses', v ?? 0)}
@@ -450,26 +601,39 @@ export default function ConfigEditor({ onSimulate, loading }) {
                 </span>
               </h4>
               <div className="cfg-grid">
-                <Field label="Allocation">
+                <Field
+                  label="Allocation"
+                  tip="Share of the portfolio in Asset 1 (equities). Asset 2 automatically gets the remainder."
+                >
                   <PercentInput
                     value={config.allocation_inv1_pct}
                     max={100}
                     onChange={(v) => update('allocation_inv1_pct', v ?? 0)}
                   />
                 </Field>
-                <Field label="Expected return">
+                <Field
+                  label="Expected return"
+                  tip="Arithmetic expected annual return for equities. Simulated as lognormal so the mean annual gross return matches this value."
+                >
                   <PercentInput
                     value={config.inv1_returns_mean}
                     onChange={(v) => update('inv1_returns_mean', v ?? 0)}
                   />
                 </Field>
-                <Field label="Volatility">
+                <Field
+                  label="Volatility"
+                  tip="Annual standard deviation of equity returns. Higher values increase sequence-of-returns risk. Typical equities are around 15%."
+                >
                   <PercentInput
                     value={config.inv1_returns_volatility}
                     onChange={(v) => update('inv1_returns_volatility', v ?? 0)}
                   />
                 </Field>
-                <Field label="Tax model" wide>
+                <Field
+                  label="Tax model"
+                  wide
+                  tip="Realized gains: tax paid only when selling. Annual tax: tax deducted each year on that year’s gains (e.g. come-cotas style)."
+                >
                   <Toggle
                     checked={!!config.inv1_use_realized_gains_tax_system}
                     onChange={(v) => update('inv1_use_realized_gains_tax_system', v)}
@@ -481,7 +645,10 @@ export default function ConfigEditor({ onSimulate, loading }) {
                   />
                 </Field>
                 {config.inv1_use_realized_gains_tax_system ? (
-                  <Field label="Realized gains tax">
+                  <Field
+                    label="Realized gains tax"
+                    tip="Tax rate applied to the gain portion of withdrawals and rebalancing sales for Asset 1."
+                  >
                     <PercentInput
                       value={config.inv1_realized_gains_tax_rate}
                       max={100}
@@ -489,7 +656,10 @@ export default function ConfigEditor({ onSimulate, loading }) {
                     />
                   </Field>
                 ) : (
-                  <Field label="Annual gains tax">
+                  <Field
+                    label="Annual gains tax"
+                    tip="Tax rate applied each year to Asset 1 gains (excluding new contributions)."
+                  >
                     <PercentInput
                       value={config.inv1_annual_tax_on_gains_rate}
                       max={100}
@@ -508,19 +678,29 @@ export default function ConfigEditor({ onSimulate, loading }) {
                 </span>
               </h4>
               <div className="cfg-grid">
-                <Field label="Premium over inflation">
+                <Field
+                  label="Premium over inflation"
+                  tip="Expected annual real return of Asset 2 above inflation (e.g. bonds). Combined with inflation each month."
+                >
                   <PercentInput
                     value={config.inv2_premium_over_inflation_mean}
                     onChange={(v) => update('inv2_premium_over_inflation_mean', v ?? 0)}
                   />
                 </Field>
-                <Field label="Premium volatility">
+                <Field
+                  label="Premium volatility"
+                  tip="Annual volatility of Asset 2’s premium over inflation."
+                >
                   <PercentInput
                     value={config.inv2_premium_over_inflation_volatility}
                     onChange={(v) => update('inv2_premium_over_inflation_volatility', v ?? 0)}
                   />
                 </Field>
-                <Field label="Tax model" wide>
+                <Field
+                  label="Tax model"
+                  wide
+                  tip="Same options as Asset 1: tax only on sale (realized) or annual tax on gains."
+                >
                   <Toggle
                     checked={!!config.inv2_use_realized_gains_tax_system}
                     onChange={(v) => update('inv2_use_realized_gains_tax_system', v)}
@@ -532,7 +712,10 @@ export default function ConfigEditor({ onSimulate, loading }) {
                   />
                 </Field>
                 {config.inv2_use_realized_gains_tax_system ? (
-                  <Field label="Realized gains tax">
+                  <Field
+                    label="Realized gains tax"
+                    tip="Tax rate on the gain portion of Asset 2 withdrawals and rebalancing sales."
+                  >
                     <PercentInput
                       value={config.inv2_realized_gains_tax_rate}
                       max={100}
@@ -540,7 +723,10 @@ export default function ConfigEditor({ onSimulate, loading }) {
                     />
                   </Field>
                 ) : (
-                  <Field label="Annual gains tax">
+                  <Field
+                    label="Annual gains tax"
+                    tip="Tax rate applied each year to Asset 2 gains."
+                  >
                     <PercentInput
                       value={config.inv2_annual_tax_on_gains_rate}
                       max={100}
@@ -559,19 +745,29 @@ export default function ConfigEditor({ onSimulate, loading }) {
             onToggle={toggleSection}
           >
             <div className="cfg-grid">
-              <Field label="Mean">
+              <Field
+                label="Mean"
+                tip="Expected annual inflation rate. Expenses and inflation-linked income grow with the simulated price level."
+              >
                 <PercentInput
                   value={config.inflation_rate_mean}
                   onChange={(v) => update('inflation_rate_mean', v ?? 0)}
                 />
               </Field>
-              <Field label="Volatility">
+              <Field
+                label="Volatility"
+                tip="Uncertainty in annual inflation. Higher values create more variable expense and Asset 2 paths."
+              >
                 <PercentInput
                   value={config.inflation_rate_volatility}
                   onChange={(v) => update('inflation_rate_volatility', v ?? 0)}
                 />
               </Field>
-              <Field label="Equity–inflation corr." hint="−1 to 1">
+              <Field
+                label="Equity–inflation corr."
+                hint="−1 to 1"
+                tip="Correlation between equity log-returns and inflation. 0 = independent; positive means stocks and inflation tend to move together."
+              >
                 <NumberInput
                   value={config.equity_inflation_correlation ?? 0}
                   step={0.05}
@@ -613,13 +809,21 @@ export default function ConfigEditor({ onSimulate, loading }) {
                   </button>
                 </div>
                 <div className="cfg-grid">
-                  <Field label="Monthly amount" hint="today’s $">
+                  <Field
+                    label="Monthly amount"
+                    hint="today’s $"
+                    tip="Income amount in today’s dollars. Inflated if indexed; otherwise fixed in nominal terms from when the stream starts."
+                  >
                     <MoneyInput
                       value={stream.monthly_amount_today}
                       onChange={(v) => updateStream(i, 'monthly_amount_today', v ?? 0)}
                     />
                   </Field>
-                  <Field label="Starts after" hint="ret. years">
+                  <Field
+                    label="Starts after"
+                    hint="ret. years"
+                    tip="Years after retirement begins before this income starts (0 = from the first retirement year)."
+                  >
                     <NumberInput
                       value={stream.start_after_retirement_years}
                       min={0}
@@ -628,7 +832,11 @@ export default function ConfigEditor({ onSimulate, loading }) {
                       }
                     />
                   </Field>
-                  <Field label="Duration" hint="years · blank = forever">
+                  <Field
+                    label="Duration"
+                    hint="years · blank = forever"
+                    tip="How many years the income lasts after it starts. Leave blank for indefinite (until the end of the simulation)."
+                  >
                     <NumberInput
                       value={stream.duration_years}
                       min={0}
@@ -636,14 +844,21 @@ export default function ConfigEditor({ onSimulate, loading }) {
                       onChange={(v) => updateStream(i, 'duration_years', v)}
                     />
                   </Field>
-                  <Field label="Tax rate">
+                  <Field
+                    label="Tax rate"
+                    tip="Income tax applied to this stream before it offsets portfolio withdrawals."
+                  >
                     <PercentInput
                       value={stream.tax_rate}
                       max={100}
                       onChange={(v) => updateStream(i, 'tax_rate', v ?? 0)}
                     />
                   </Field>
-                  <Field label="Inflation indexed" wide>
+                  <Field
+                    label="Inflation indexed"
+                    wide
+                    tip="On: amount keeps real purchasing power. Off: nominal amount is locked using the price level at the stream’s start date."
+                  >
                     <Toggle
                       checked={!!stream.inflation_indexed}
                       onChange={(v) => updateStream(i, 'inflation_indexed', v)}
@@ -665,7 +880,10 @@ export default function ConfigEditor({ onSimulate, loading }) {
             onToggle={toggleSection}
           >
             <div className="cfg-grid">
-              <Field label="Main simulations">
+              <Field
+                label="Main simulations"
+                tip="Number of Monte Carlo paths in the final run (after the search). More paths = smoother estimates, slower runtime. Prefer 1,000+."
+              >
                 <NumberInput
                   value={config.num_simulations_main}
                   min={1}
@@ -673,7 +891,10 @@ export default function ConfigEditor({ onSimulate, loading }) {
                   onChange={(v) => update('num_simulations_main', v ?? 1)}
                 />
               </Field>
-              <Field label="Search simulations">
+              <Field
+                label="Search simulations"
+                tip="Paths used at each step while searching for the minimum working months (bracket + bisection)."
+              >
                 <NumberInput
                   value={config.num_simulations_search}
                   min={1}
@@ -681,21 +902,33 @@ export default function ConfigEditor({ onSimulate, loading }) {
                   onChange={(v) => update('num_simulations_search', v ?? 1)}
                 />
               </Field>
-              <Field label="Start search at" hint="months">
+              <Field
+                label="Start search at"
+                hint="months"
+                tip="Working months where the search begins. 0 means “retire today” is tested first."
+              >
                 <NumberInput
                   value={config.starting_working_months_search}
                   min={0}
                   onChange={(v) => update('starting_working_months_search', v ?? 0)}
                 />
               </Field>
-              <Field label="Processes" hint="cores">
+              <Field
+                label="Processes"
+                hint="cores"
+                tip="CPU processes for parallel path evaluation. 1 or blank-equivalent runs sequentially. Higher uses more CPU."
+              >
                 <NumberInput
                   value={config.num_processes}
                   min={1}
                   onChange={(v) => update('num_processes', v)}
                 />
               </Field>
-              <Field label="Seed" hint="blank = random">
+              <Field
+                label="Seed"
+                hint="blank = random"
+                tip="Fixes randomness for reproducible results. Leave blank for a new random seed each run. Search and final use independent streams from this seed."
+              >
                 <NumberInput
                   value={config.seed}
                   min={0}
@@ -709,7 +942,11 @@ export default function ConfigEditor({ onSimulate, loading }) {
       )}
 
       <div className="cfg-run">
-        <Field label="Working months override" hint="leave blank to search">
+        <Field
+          label="Working months override"
+          hint="leave blank to search"
+          tip="Skip the search and run the final simulation with this many working months. Leave blank to find the minimum months that hit the target success rate."
+        >
           <NumberInput
             value={workingMonths === '' ? null : Number(workingMonths)}
             min={0}
