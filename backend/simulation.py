@@ -1,30 +1,70 @@
+import math
+import multiprocessing
+from typing import Callable, Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import pandas as pd
-import multiprocessing
-from typing import Callable, Dict, Union, List, Tuple, Optional
 from loguru import logger
 
 from config import Config
-from constants import (
-    SMALL_EPSILON,
-    MONTHS_PER_YEAR,
-    MINIMUM_SIMULATIONS_FOR_SEARCH_STEP,
-)
+from constants import MONTHS_PER_YEAR, SMALL_EPSILON
 from utils import _generate_seed_from_timestamp
+
+
+def arithmetic_to_log_params(mean: float, vol: float) -> Tuple[float, float]:
+    """
+    Convert arithmetic annual mean/vol to lognormal parameters so that
+    E[annual gross return] == 1 + mean.
+    """
+    if vol <= 0:
+        # Degenerate: deterministic growth
+        return math.log(max(1.0 + mean, SMALL_EPSILON)), 0.0
+    one_plus_mean = 1.0 + mean
+    if one_plus_mean <= 0:
+        # Pathological mean <= -100%; clamp for numerical safety
+        one_plus_mean = SMALL_EPSILON
+    sigma_log = math.sqrt(math.log(1.0 + (vol**2) / (one_plus_mean**2)))
+    mu_log = math.log(one_plus_mean) - 0.5 * sigma_log**2
+    return mu_log, sigma_log
+
+
+def median_first_year_withdrawal_rate(summary_df: pd.DataFrame) -> float:
+    """
+    Median per-path first-year gross withdrawal / start-of-retirement balance.
+    Both terms are nominal and dated to the retirement date.
+    """
+    if summary_df.empty:
+        return float("nan")
+    start = summary_df["Start Balance"]
+    withdraw = summary_df["First Year Gross Withdrawal"]
+    valid = start > SMALL_EPSILON
+    if not valid.any():
+        return float("nan")
+    rates = (withdraw[valid] / start[valid]) * 100.0
+    return float(rates.median())
+
+
+def trajectory_retirement_year_index(working_months: int) -> int:
+    """
+    Year-grid index where the retirement-start balance is recorded.
+    Matches padding/trajectory logic: ceil(working_months / 12) for working_months > 0.
+    """
+    if working_months <= 0:
+        return 0
+    return (working_months + MONTHS_PER_YEAR - 1) // MONTHS_PER_YEAR
 
 
 class RetirementMonteCarloSimulator:
     """
     A Monte Carlo simulator for retirement planning.
 
-    Simulates portfolio performance over a working accumulation phase and a retirement decumulation phase,
-    taking into account inflation, taxes, contributions, Expenses, and other variables.
+    Simulates portfolio performance over a working accumulation phase and a retirement
+    decumulation phase, taking into account inflation, taxes, contributions, expenses,
+    and other variables.
     """
 
     def __init__(self, params_model: Config, main_seed_override: Optional[int] = None):
-        self.params_model = params_model.model_copy(
-            deep=True
-        )  # Use a copy to modify (e.g. income stream nominal values)
+        self.params_model = params_model.model_copy(deep=True)
 
         if main_seed_override is not None:
             self.main_seed = main_seed_override
@@ -32,9 +72,75 @@ class RetirementMonteCarloSimulator:
             self.main_seed = self.params_model.seed
         else:
             self.main_seed = _generate_seed_from_timestamp()
-        logger.info(
-            f"Simulator initialized for scenario '{self.params_model.Nickname}' with main seed: {self.main_seed}"
+
+        # Independent seed streams: search vs final run (avoids selection bias).
+        seed_seq = np.random.SeedSequence(self.main_seed)
+        self._search_seed_seq, self._final_seed_seq = seed_seq.spawn(2)
+        self._stream_name = "final"
+        self._active_seed_seq = self._final_seed_seq
+        # Cache path seeds per (stream, n) so common random numbers are reused
+        # across working-month candidates without advancing the SeedSequence.
+        self._path_seed_cache: Dict[Tuple[str, int], List[int]] = {}
+
+        p = self.params_model
+        self._inv1_mu_log, self._inv1_sigma_log = arithmetic_to_log_params(
+            p.inv1_returns_mean, p.inv1_returns_volatility
         )
+        self._inf_mu_log, self._inf_sigma_log = arithmetic_to_log_params(
+            p.inflation_rate_mean, p.inflation_rate_volatility
+        )
+        self._inv2_prem_mu_log, self._inv2_prem_sigma_log = arithmetic_to_log_params(
+            p.inv2_premium_over_inflation_mean,
+            p.inv2_premium_over_inflation_volatility,
+        )
+
+        # Correlation matrix over (equity, inflation, inv2 premium); Cholesky factor.
+        rho = p.equity_inflation_correlation
+        corr = np.array(
+            [
+                [1.0, rho, 0.0],
+                [rho, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
+        # Ensure positive-definite for |rho| near 1
+        try:
+            self._chol = np.linalg.cholesky(corr)
+        except np.linalg.LinAlgError:
+            logger.warning(
+                f"Correlation matrix not PD (rho={rho}); falling back to zero correlation."
+            )
+            self._chol = np.eye(3)
+
+        logger.info(
+            f"Simulator initialized for scenario '{self.params_model.Nickname}' "
+            f"with main seed: {self.main_seed}"
+        )
+
+    def use_search_seeds(self) -> None:
+        """Use the search seed stream for subsequent simulation batches."""
+        self._stream_name = "search"
+        self._active_seed_seq = self._search_seed_seq
+
+    def use_final_seeds(self) -> None:
+        """Use the independent final-run seed stream."""
+        self._stream_name = "final"
+        self._active_seed_seq = self._final_seed_seq
+
+    def _path_seeds(self, num_simulations: int) -> List[int]:
+        """
+        Derive a fixed list of path seeds from the active SeedSequence.
+        Same seed list is reused across working-month candidates (common random numbers).
+        """
+        cache_key = (self._stream_name, num_simulations)
+        if cache_key not in self._path_seed_cache:
+            # Spawn once and cache; do not re-spawn on subsequent calls.
+            children = self._active_seed_seq.spawn(num_simulations)
+            self._path_seed_cache[cache_key] = [
+                int(c.generate_state(1)[0]) for c in children
+            ]
+        return self._path_seed_cache[cache_key]
 
     def _calculate_withdrawal_and_update(
         self,
@@ -163,24 +269,38 @@ class RetirementMonteCarloSimulator:
 
         return new_bal_inv1, new_cb_inv1, new_bal_inv2, new_cb_inv2
 
+    def _draw_shock_path(self, n_months: int, path_seed: int) -> np.ndarray:
+        """
+        Pre-draw correlated standard-normal shocks of shape (n_months, 3) for
+        (equity, inflation, inv2 premium).
+        """
+        rng = np.random.default_rng(path_seed)
+        z = rng.standard_normal((n_months, 3))
+        return z @ self._chol.T
+
+    def _monthly_gross_from_shock(
+        self, mu_log: float, sigma_log: float, z: float
+    ) -> float:
+        """Monthly gross return factor from annual log params and a unit shock."""
+        return float(
+            math.exp(mu_log / MONTHS_PER_YEAR + sigma_log / math.sqrt(MONTHS_PER_YEAR) * z)
+        )
+
     def _run_single_simulation_path(
         self, working_months: int, path_seed: int
     ) -> Dict[str, Union[float, List[float]]]:
         """
         Runs a single simulation path for a given number of working months and seed.
 
-        Args:
-            working_months: Number of months to simulate working/accumulation phase.
-            path_seed: Random seed for this specific simulation path.
-
-        Returns:
-            A dictionary containing simulation results: 'Start Balance', 'Final Balance', and 'Trajectory'.
+        Returns a dict with Start Balance, Final Balance, First Year Gross Withdrawal,
+        Trajectory, and (for tests) Inflation At Retirement.
         """
-        np.random.seed(path_seed)
         p = self.params_model
+        total_months = working_months + p.retirement_years * MONTHS_PER_YEAR
+        shocks = self._draw_shock_path(max(total_months, 1), path_seed)
 
         yearly_trajectory: List[float] = [p.initial_balance]
-        # Store master cumulative inflation factors at the start of each year (idx 0 = T0, idx 1 = start of year 1, etc.)
+        # Price level at the start of each simulation year (idx 0 = T0).
         yearly_master_inflation_factors: List[float] = [1.0]
 
         balance_inv1 = p.initial_balance * p.allocation_inv1_pct
@@ -193,47 +313,35 @@ class RetirementMonteCarloSimulator:
         bal_inv2_start_tax_year_acc = balance_inv2
         contrib_inv1_tax_year, contrib_inv2_tax_year = 0.0, 0.0
 
-        # Master cumulative inflation factor from T=0
-        master_cumulative_inflation: float = (
-            1.0  # Starts at 1.0 at T=0 (simulation start)
-        )
-        current_year_annual_inflation = np.random.normal(
-            p.inflation_rate_mean, p.inflation_rate_volatility
-        )  # Inflation for year 0
+        master_cumulative_inflation = 1.0
+        shock_idx = 0
 
         # --- ACCUMULATION (WORKING) PHASE ---
         for m_idx in range(1, working_months + 1):
-            if (m_idx - 1) % MONTHS_PER_YEAR == 0:  # Start of a new year
-                if m_idx > 1:  # Not the very first month of simulation
-                    master_cumulative_inflation *= (
-                        1 + current_year_annual_inflation
-                    )  # Apply previous year's inflation
-                    yearly_master_inflation_factors.append(master_cumulative_inflation)
-                    current_year_annual_inflation = np.random.normal(
-                        p.inflation_rate_mean, p.inflation_rate_volatility
-                    )
-                    if p.contribution_growth_rate_annual > 0:
-                        current_monthly_contribution *= (
-                            1 + p.contribution_growth_rate_annual
-                        )
-                # For the very first year (m_idx=1 up to 12), current_year_annual_inflation is already set for year 0
-                # master_cumulative_inflation is 1.0 for year 0. yearly_master_inflation_factors[0] is 1.0
+            if (m_idx - 1) % MONTHS_PER_YEAR == 0 and m_idx > 1:
+                # Start of a new calendar year: record price level, grow contributions.
+                yearly_master_inflation_factors.append(master_cumulative_inflation)
+                if p.contribution_growth_rate_annual > 0:
+                    current_monthly_contribution *= 1 + p.contribution_growth_rate_annual
 
-            monthly_ret_inv1 = np.random.normal(
-                p.inv1_returns_mean / MONTHS_PER_YEAR,
-                p.inv1_returns_volatility / np.sqrt(MONTHS_PER_YEAR),
-            )
-            monthly_ret_inv2_premium = np.random.normal(
-                p.inv2_premium_over_inflation_mean / MONTHS_PER_YEAR,
-                p.inv2_premium_over_inflation_volatility / np.sqrt(MONTHS_PER_YEAR),
-            )
-            # Inv2 return uses the current year's annual inflation, divided monthly
-            monthly_ret_inv2 = (
-                current_year_annual_inflation / MONTHS_PER_YEAR
-            ) + monthly_ret_inv2_premium
+            z_eq, z_inf, z_prem = shocks[shock_idx]
+            shock_idx += 1
 
-            balance_inv1 *= 1 + monthly_ret_inv1
-            balance_inv2 *= 1 + monthly_ret_inv2
+            monthly_gross_inv1 = self._monthly_gross_from_shock(
+                self._inv1_mu_log, self._inv1_sigma_log, z_eq
+            )
+            monthly_gross_inf = self._monthly_gross_from_shock(
+                self._inf_mu_log, self._inf_sigma_log, z_inf
+            )
+            monthly_gross_prem = self._monthly_gross_from_shock(
+                self._inv2_prem_mu_log, self._inv2_prem_sigma_log, z_prem
+            )
+            # Inv2: inflation component * premium component (both as gross factors).
+            monthly_gross_inv2 = monthly_gross_inf * monthly_gross_prem
+
+            balance_inv1 *= monthly_gross_inv1
+            balance_inv2 *= monthly_gross_inv2
+            master_cumulative_inflation *= monthly_gross_inf
 
             contrib_m_inv1 = current_monthly_contribution * p.allocation_inv1_pct
             contrib_m_inv2 = current_monthly_contribution * p.allocation_inv2_pct
@@ -283,20 +391,25 @@ class RetirementMonteCarloSimulator:
                 if m_idx % MONTHS_PER_YEAR == 0:
                     yearly_trajectory.append(total_balance)
 
-                bal_inv1_start_tax_year_acc = (
-                    total_balance * p.allocation_inv1_pct
-                )  # After tax, re-allocate for next year start
+                bal_inv1_start_tax_year_acc = total_balance * p.allocation_inv1_pct
                 bal_inv2_start_tax_year_acc = total_balance * p.allocation_inv2_pct
                 contrib_inv1_tax_year, contrib_inv2_tax_year = 0.0, 0.0
 
-        # End of accumulation phase, apply last year's inflation to master factor
-        if working_months > 0:
-            master_cumulative_inflation *= 1 + current_year_annual_inflation
-            yearly_master_inflation_factors.append(
-                master_cumulative_inflation
-            )  # Factor at retirement start
-
         balance_at_retirement_start = balance_inv1 + balance_inv2
+        inflation_at_retirement = master_cumulative_inflation
+
+        # Record price level at retirement start if not already (partial final year).
+        num_working_years = (
+            (working_months + MONTHS_PER_YEAR - 1) // MONTHS_PER_YEAR
+            if working_months > 0
+            else 0
+        )
+        # yearly_master_inflation_factors should have an entry for retirement start.
+        # After full years we have entries at year starts; append current level for
+        # the retirement-start year index if needed.
+        while len(yearly_master_inflation_factors) <= num_working_years:
+            yearly_master_inflation_factors.append(master_cumulative_inflation)
+
         if working_months > 0 and working_months % MONTHS_PER_YEAR != 0:
             if (
                 not yearly_trajectory
@@ -304,81 +417,52 @@ class RetirementMonteCarloSimulator:
                 > SMALL_EPSILON
             ):
                 yearly_trajectory.append(balance_at_retirement_start)
-        elif (
-            working_months == 0 and not yearly_trajectory
-        ):  # if starting directly in retirement
-            yearly_trajectory.append(
-                p.initial_balance
-            )  # yearly_master_inflation_factors[0] is 1.0
+        elif working_months == 0 and len(yearly_trajectory) == 0:
+            yearly_trajectory.append(p.initial_balance)
 
-        # Pre-calculate fixed nominal monthly amounts for non-inflation-indexed income streams
+        # Pre-calculate fixed nominal amounts for non-inflation-indexed income streams
         path_specific_other_income_streams_details = []
-        num_working_years_for_indexing = (
-            (working_months + MONTHS_PER_YEAR - 1) // MONTHS_PER_YEAR
-            if working_months > 0
-            else 0
-        )
-
         for income_config in p.other_income_streams:
             stream_detail = income_config.model_copy(deep=True)
-            # Determine the master inflation factor at the year this stream starts
             year_income_starts_abs_sim_idx = (
-                num_working_years_for_indexing
-                + income_config.start_after_retirement_years
+                num_working_years + income_config.start_after_retirement_years
             )
-
             if year_income_starts_abs_sim_idx < len(yearly_master_inflation_factors):
                 stream_detail._master_inflation_at_start = (
                     yearly_master_inflation_factors[year_income_starts_abs_sim_idx]
                 )
-            else:
-                # This would require projecting inflation factors further.
-                pass
-
             if (
                 not income_config.inflation_indexed
                 and stream_detail._master_inflation_at_start is not None
-            ):  # Will be set later if None now
+            ):
                 stream_detail._nominal_fixed_monthly_amount = (
                     income_config.monthly_amount_today
                     * stream_detail._master_inflation_at_start
                 )
             path_specific_other_income_streams_details.append(stream_detail)
 
-        # --- DECUMULATION (RETIREMENT) PHASE ---
-        # master_cumulative_inflation is already at the value for the start of retirement.
-        # yearly_master_inflation_factors also contains this.
+        first_year_gross_withdrawal = 0.0
 
-        for year_num in range(
-            p.retirement_years
-        ):  # year_num is 0 for first year of retirement
+        # --- DECUMULATION (RETIREMENT) PHASE ---
+        for year_num in range(p.retirement_years):
             if (
                 balance_inv1 + balance_inv2 <= SMALL_EPSILON
                 and p.monthly_expenses > SMALL_EPSILON
             ):
                 break
 
-            # Inflation for this retirement year
-            annual_inflation_this_ret_year = np.random.normal(
-                p.inflation_rate_mean, p.inflation_rate_volatility
-            )
-            master_cumulative_inflation *= (
-                1 + annual_inflation_this_ret_year
-            )  # Update master inflation factor
-            yearly_master_inflation_factors.append(
-                master_cumulative_inflation
-            )  # Store it
+            # Price expenses/income at the START of the retirement year.
+            price_level_at_year_start = master_cumulative_inflation
+            yearly_master_inflation_factors.append(price_level_at_year_start)
 
-            # Now that yearly_master_inflation_factors is populated for this year, update any income streams
-            # that didn't have their _master_inflation_at_start set yet.
+            # Update any deferred non-indexed stream start factors.
             for stream_detail in path_specific_other_income_streams_details:
                 if (
                     not stream_detail.inflation_indexed
                     and stream_detail._master_inflation_at_start is None
                 ):
                     year_income_starts_abs_sim_idx = (
-                        num_working_years_for_indexing
-                        + stream_detail.start_after_retirement_years
+                        num_working_years + stream_detail.start_after_retirement_years
                     )
                     if year_income_starts_abs_sim_idx < len(
                         yearly_master_inflation_factors
@@ -393,13 +477,11 @@ class RetirementMonteCarloSimulator:
                             * stream_detail._master_inflation_at_start
                         )
 
-            # Nominal annual expenses for this retirement year
             nominal_annual_expenses = (
-                p.monthly_expenses * MONTHS_PER_YEAR * master_cumulative_inflation
+                p.monthly_expenses * MONTHS_PER_YEAR * price_level_at_year_start
             )
 
             net_other_annual_income = 0.0
-
             for income_stream_details in path_specific_other_income_streams_details:
                 if year_num >= income_stream_details.start_after_retirement_years:
                     if (
@@ -410,13 +492,12 @@ class RetirementMonteCarloSimulator:
                         )
                         < income_stream_details.duration_years
                     ):
-                        current_nominal_monthly_val: float
                         if income_stream_details.inflation_indexed:
                             current_nominal_monthly_val = (
                                 income_stream_details.monthly_amount_today
-                                * master_cumulative_inflation
+                                * price_level_at_year_start
                             )
-                        else:  # Not inflation_indexed, use pre-calculated fixed nominal amount
+                        else:
                             if (
                                 income_stream_details._nominal_fixed_monthly_amount
                                 is not None
@@ -424,10 +505,10 @@ class RetirementMonteCarloSimulator:
                                 current_nominal_monthly_val = (
                                     income_stream_details._nominal_fixed_monthly_amount
                                 )
-                            else:  # Fallback if somehow not calculated (should not happen)
+                            else:
                                 current_nominal_monthly_val = (
                                     income_stream_details.monthly_amount_today
-                                )  # Effectively T=0 nominal value
+                                )
 
                         stream_annual_pre_tax = (
                             current_nominal_monthly_val * MONTHS_PER_YEAR
@@ -446,12 +527,10 @@ class RetirementMonteCarloSimulator:
                 balance_inv1,
                 balance_inv2,
             )
-            total_gross_withdraw_inv1_this_year, total_gross_withdraw_inv2_this_year = (
-                0.0,
-                0.0,
-            )
+            total_gross_withdraw_inv1_this_year = 0.0
+            total_gross_withdraw_inv2_this_year = 0.0
 
-            for month_in_ret_year_idx in range(MONTHS_PER_YEAR):
+            for _month_in_ret_year_idx in range(MONTHS_PER_YEAR):
                 total_balance_before_month = balance_inv1 + balance_inv2
                 if (
                     total_balance_before_month <= SMALL_EPSILON
@@ -459,21 +538,23 @@ class RetirementMonteCarloSimulator:
                 ):
                     break
 
-                m_ret1 = np.random.normal(
-                    p.inv1_returns_mean / MONTHS_PER_YEAR,
-                    p.inv1_returns_volatility / np.sqrt(MONTHS_PER_YEAR),
-                )
-                m_ret2_prem = np.random.normal(
-                    p.inv2_premium_over_inflation_mean / MONTHS_PER_YEAR,
-                    p.inv2_premium_over_inflation_volatility / np.sqrt(MONTHS_PER_YEAR),
-                )
-                # Monthly part of Inv2 return uses this retirement year's annual inflation
-                m_ret2 = (
-                    annual_inflation_this_ret_year / MONTHS_PER_YEAR
-                ) + m_ret2_prem
+                z_eq, z_inf, z_prem = shocks[min(shock_idx, len(shocks) - 1)]
+                shock_idx += 1
 
-                balance_inv1 *= 1 + m_ret1
-                balance_inv2 *= 1 + m_ret2
+                monthly_gross_inv1 = self._monthly_gross_from_shock(
+                    self._inv1_mu_log, self._inv1_sigma_log, z_eq
+                )
+                monthly_gross_inf = self._monthly_gross_from_shock(
+                    self._inf_mu_log, self._inf_sigma_log, z_inf
+                )
+                monthly_gross_prem = self._monthly_gross_from_shock(
+                    self._inv2_prem_mu_log, self._inv2_prem_sigma_log, z_prem
+                )
+                monthly_gross_inv2 = monthly_gross_inf * monthly_gross_prem
+
+                balance_inv1 *= monthly_gross_inv1
+                balance_inv2 *= monthly_gross_inv2
+                master_cumulative_inflation *= monthly_gross_inf
                 total_after_growth = balance_inv1 + balance_inv2
 
                 if (
@@ -498,19 +579,10 @@ class RetirementMonteCarloSimulator:
                 )
                 prop2 = 1.0 - prop1
 
-                balance_inv1_after_growth, cost_basis_inv1_after_growth = (
-                    balance_inv1,
-                    cost_basis_inv1,
-                )
-                balance_inv2_after_growth, cost_basis_inv2_after_growth = (
-                    balance_inv2,
-                    cost_basis_inv2,
-                )
-
                 balance_inv1, cost_basis_inv1, gw1 = (
                     self._calculate_withdrawal_and_update(
-                        balance_inv1_after_growth,
-                        cost_basis_inv1_after_growth,
+                        balance_inv1,
+                        cost_basis_inv1,
                         actual_monthly_withdrawal_target * prop1,
                         p.inv1_use_realized_gains_tax_system,
                         p.inv1_realized_gains_tax_rate,
@@ -520,8 +592,8 @@ class RetirementMonteCarloSimulator:
 
                 balance_inv2, cost_basis_inv2, gw2 = (
                     self._calculate_withdrawal_and_update(
-                        balance_inv2_after_growth,
-                        cost_basis_inv2_after_growth,
+                        balance_inv2,
+                        cost_basis_inv2,
                         actual_monthly_withdrawal_target * prop2,
                         p.inv2_use_realized_gains_tax_system,
                         p.inv2_realized_gains_tax_rate,
@@ -533,7 +605,7 @@ class RetirementMonteCarloSimulator:
                 balance_inv2 = max(0, balance_inv2)
                 cost_basis_inv1 = min(
                     cost_basis_inv1, balance_inv1 if balance_inv1 > 0 else 0
-                )  # CB cannot exceed balance
+                )
                 cost_basis_inv2 = min(
                     cost_basis_inv2, balance_inv2 if balance_inv2 > 0 else 0
                 )
@@ -552,14 +624,17 @@ class RetirementMonteCarloSimulator:
                     and monthly_withdrawal_needed > SMALL_EPSILON
                 ):
                     break
-            # --- End of Monthly Loop in Retirement Year ---
 
-            # --- End of Retirement Year: Apply annual taxes if not using realized system ---
+            if year_num == 0:
+                first_year_gross_withdrawal = (
+                    total_gross_withdraw_inv1_this_year
+                    + total_gross_withdraw_inv2_this_year
+                )
+
             if (
                 not p.inv1_use_realized_gains_tax_system
                 and p.inv1_annual_tax_on_gains_rate > 0
             ):
-                # Gain is current EOY balance + gross withdrawals made during year - balance at start of year
                 gain_inv1_ret_year = (
                     balance_inv1 + total_gross_withdraw_inv1_this_year
                 ) - bal_inv1_start_tax_year_ret
@@ -590,13 +665,9 @@ class RetirementMonteCarloSimulator:
             ):
                 break
 
-            # Rebalance at EOY after taxes (if any) - ensures start of next year is allocated correctly
-            if (
-                total_balance_after_annual_tax > SMALL_EPSILON
-            ):  # Only rebalance if there is money
+            if total_balance_after_annual_tax > SMALL_EPSILON:
                 balance_inv1 = total_balance_after_annual_tax * p.allocation_inv1_pct
                 balance_inv2 = total_balance_after_annual_tax * p.allocation_inv2_pct
-                # And apportion total cost basis
                 total_cb = cost_basis_inv1 + cost_basis_inv2
                 cost_basis_inv1 = total_cb * p.allocation_inv1_pct
                 cost_basis_inv2 = total_cb * p.allocation_inv2_pct
@@ -605,12 +676,6 @@ class RetirementMonteCarloSimulator:
 
         final_total_balance = balance_inv1 + balance_inv2
 
-        num_working_years = (
-            (working_months + MONTHS_PER_YEAR - 1) // MONTHS_PER_YEAR
-            if working_months > 0
-            else 0
-        )
-        # Expected length: 1 (initial) + num_working_years (EOY balances) + num_retirement_years (EOY balances)
         expected_len = 1 + num_working_years + p.retirement_years
         current_len = len(yearly_trajectory)
 
@@ -623,7 +688,9 @@ class RetirementMonteCarloSimulator:
         return {
             "Start Balance": balance_at_retirement_start,
             "Final Balance": max(0, final_total_balance),
+            "First Year Gross Withdrawal": first_year_gross_withdrawal,
             "Trajectory": yearly_trajectory,
+            "Inflation At Retirement": inflation_at_retirement,
         }
 
     def run_monte_carlo_simulations(
@@ -631,8 +698,11 @@ class RetirementMonteCarloSimulator:
     ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Optional[List[List[float]]]]:
         """
         Runs multiple simulation paths, either sequentially or in parallel.
+
+        Uses common random numbers: path seeds are derived from the active seed
+        stream and are identical across different working_months candidates.
         """
-        path_seeds = [self.main_seed + i for i in range(num_simulations)]
+        path_seeds = self._path_seeds(num_simulations)
         num_procs_to_use = (
             self.params_model.num_processes
             if self.params_model.num_processes is not None
@@ -643,7 +713,8 @@ class RetirementMonteCarloSimulator:
 
         if num_procs_to_use <= 1:
             logger.debug(
-                f"Running {num_simulations} simulations sequentially for {working_months} working months."
+                f"Running {num_simulations} simulations sequentially for "
+                f"{working_months} working months."
             )
             all_results_list = [
                 self._run_single_simulation_path(working_months, seed)
@@ -651,13 +722,11 @@ class RetirementMonteCarloSimulator:
             ]
         else:
             logger.debug(
-                f"Running {num_simulations} simulations in parallel using {num_procs_to_use} processes for {working_months} working months."
+                f"Running {num_simulations} simulations in parallel using "
+                f"{num_procs_to_use} processes for {working_months} working months."
             )
             args_for_starmap = [(working_months, seed) for seed in path_seeds]
             try:
-                # Consider get_context for spawn/forkserver if issues arise, esp. on macOS or Windows.
-                # context = multiprocessing.get_context('spawn')
-                # with context.Pool(processes=num_procs_to_use) as pool:
                 with multiprocessing.Pool(processes=num_procs_to_use) as pool:
                     all_results_list = pool.starmap(
                         self._run_single_simulation_path, args_for_starmap
@@ -673,7 +742,12 @@ class RetirementMonteCarloSimulator:
                 ]
 
         summary_results_list = [
-            {"Start Balance": r["Start Balance"], "Final Balance": r["Final Balance"]}
+            {
+                "Start Balance": r["Start Balance"],
+                "Final Balance": r["Final Balance"],
+                "First Year Gross Withdrawal": r["First Year Gross Withdrawal"],
+                "Inflation At Retirement": r.get("Inflation At Retirement", 1.0),
+            }
             for r in all_results_list
         ]
         summary_df = pd.DataFrame(summary_results_list)
@@ -689,18 +763,14 @@ class RetirementMonteCarloSimulator:
 
         if trajectories_raw:
             try:
-                # Ensure all trajectories have the same length (padding is done in _run_single_simulation_path)
-                # Check for length consistency before creating DataFrame if strictness is needed
                 min_len = min(map(len, trajectories_raw))
                 max_len = max(map(len, trajectories_raw))
                 if min_len != max_len:
                     logger.warning(
-                        f"Trajectory lengths are inconsistent: min={min_len}, max={max_len}. This might affect percentile calculations. Using min_len for safety if issues occur, but padding should handle."
+                        f"Trajectory lengths are inconsistent: min={min_len}, max={max_len}."
                     )
 
-                trajectory_df = pd.DataFrame(
-                    trajectories_raw
-                ).transpose()  # Rows are years, columns are simulations
+                trajectory_df = pd.DataFrame(trajectories_raw).transpose()
 
                 if not trajectory_df.empty:
                     percentiles_to_calc = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
@@ -714,9 +784,11 @@ class RetirementMonteCarloSimulator:
                             num_sample_paths, trajectory_df.shape[1]
                         )
                         sample_trajectories_list = trajectory_df.sample(
-                            n=actual_num_to_sample, axis=1, random_state=self.main_seed
+                            n=actual_num_to_sample,
+                            axis=1,
+                            random_state=self.main_seed,
                         ).values.T.tolist()
-            except ValueError as ve:  # Handles cases like inconsistent trajectory lengths if padding failed
+            except ValueError as ve:
                 logger.error(
                     f"Error processing trajectories, possibly due to inconsistent lengths: {ve}",
                     exc_info=True,
@@ -726,48 +798,10 @@ class RetirementMonteCarloSimulator:
 
         return summary_df, trajectory_percentiles_df, sample_trajectories_list
 
-    def _get_dynamic_sim_count(
-        self,
-        achieved_prob_prev_iter: float,
-        target_prob_pct: float,
-        base_sim_count: int,
-    ) -> int:
-        """
-        Adjusts the number of simulations for the next search iteration.
-        More simulations are used when closer to the target for higher precision.
-        """
-        if achieved_prob_prev_iter < 0:  # First iteration or no prior data
-            num_s = int(base_sim_count * 0.5)
-        else:
-            delta_prob = abs(achieved_prob_prev_iter - target_prob_pct)
-            if delta_prob <= 1.0:
-                num_s = int(base_sim_count * 4.00)  # Very close
-            elif delta_prob <= 1.5:
-                num_s = int(base_sim_count * 2.00)  # Even closer
-            elif delta_prob <= 2.0:
-                num_s = int(base_sim_count * 1.00)  # Getting closer
-            elif delta_prob <= 3.0:
-                num_s = int(base_sim_count * 0.80)
-            elif delta_prob <= 4.0:
-                num_s = int(base_sim_count * 0.70)
-            elif delta_prob <= 5.0:
-                num_s = int(base_sim_count * 0.50)
-            else:
-                num_s = int(base_sim_count * 0.20)  # Far
-
-        # Ensure the number of simulations is not excessively small or large
-        final_sim_count = max(
-            MINIMUM_SIMULATIONS_FOR_SEARCH_STEP, min(num_s, base_sim_count * 5)
-        )  # Cap max multiplier
-        delta_val_display = (
-            abs(achieved_prob_prev_iter - target_prob_pct)
-            if achieved_prob_prev_iter >= 0
-            else -1.0
-        )
-        logger.debug(
-            f"Dynamic sim count: prev_prob={achieved_prob_prev_iter:.2f}, target={target_prob_pct:.2f}, delta={delta_val_display:.2f}, base_count={base_sim_count}, new_count={final_sim_count}"
-        )
-        return final_sim_count
+    def _success_probability(self, summary_df: pd.DataFrame) -> float:
+        if summary_df.empty:
+            return 0.0
+        return float((summary_df["Final Balance"] > SMALL_EPSILON).mean() * 100.0)
 
     def find_minimum_working_months(
         self,
@@ -775,144 +809,138 @@ class RetirementMonteCarloSimulator:
         progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> Tuple[int, float]:
         """
-        Iteratively searches for the minimum number of working months required
-        to achieve the target success probability.
+        Finds the minimum working months to achieve the target success probability
+        via a coarse bracket scan followed by bisection.
+
+        Uses the search seed stream with common random numbers across candidates.
         """
+        self.use_search_seeds()
         p = self.params_model
         starting_working_months = p.starting_working_months_search
         target_probability_pct = p.target_probability
-        base_num_simulations_per_test = p.num_simulations_search
-
-        max_search_increase_months = (
-            70 * MONTHS_PER_YEAR
-        )  # Max ~70 additional years of search
-        max_total_months_to_test = starting_working_months + max_search_increase_months
-
-        current_test_months = starting_working_months
-        achieved_probability_at_prev_months = (
-            -1.0
-        )  # Probability from the *previous* test_months iteration
-        highest_prob_if_target_not_met = -1.0
+        sim_count = p.num_simulations_search
+        max_total_months = starting_working_months + 70 * MONTHS_PER_YEAR
 
         if verbose:
             logger.info(
-                f"Searching for minimum working months to achieve {target_probability_pct:.2f}% success for '{p.Nickname}'."
+                f"Searching for minimum working months to achieve "
+                f"{target_probability_pct:.2f}% success for '{p.Nickname}'."
             )
             logger.info(
-                f"Starting search from {starting_working_months} months. Base simulations per test step: {base_num_simulations_per_test}."
+                f"Starting search from {starting_working_months} months. "
+                f"Simulations per test: {sim_count}."
             )
 
         search_iteration = 0
-        # Simple linear scan; could be optimized (e.g., binary search if prob is monotonic)
-        # For now, dynamic sim count helps manage computational cost.
-        months_increment_step = 12  # Search year by year initially for speed
+        highest_prob_if_target_not_met = -1.0
+        lo = starting_working_months
+        hi: Optional[int] = None
 
-        while current_test_months <= max_total_months_to_test:
+        def _test(months: int) -> float:
+            nonlocal search_iteration, highest_prob_if_target_not_met
             search_iteration += 1
-            iter_sim_count = self._get_dynamic_sim_count(
-                achieved_probability_at_prev_months,
-                target_probability_pct,
-                base_num_simulations_per_test,
-            )
-
             if verbose:
                 logger.info(
-                    f"Search iter {search_iteration}: Testing {current_test_months} m ({current_test_months / MONTHS_PER_YEAR:.1f} yrs) with {iter_sim_count} sims."
+                    f"Search iter {search_iteration}: Testing {months} m "
+                    f"({months / MONTHS_PER_YEAR:.1f} yrs) with {sim_count} sims."
                 )
-
-            summary_df, _, _ = self.run_monte_carlo_simulations(
-                current_test_months, iter_sim_count
-            )
-
-            current_iter_achieved_probability_pct: float
-            if summary_df.empty:
-                logger.warning(
-                    f"Search iter {search_iteration}: No sim results for {current_test_months} months."
-                )
-                current_iter_achieved_probability_pct = 0.0
-            else:
-                current_iter_achieved_probability_pct = (
-                    summary_df["Final Balance"] > SMALL_EPSILON
-                ).mean() * 100.0
-
+            summary_df, _, _ = self.run_monte_carlo_simulations(months, sim_count)
+            prob = self._success_probability(summary_df)
             if verbose:
                 logger.info(
-                    f"  Search iter {search_iteration}: Prob for {current_test_months} m: {current_iter_achieved_probability_pct:.2f}% (Target: {target_probability_pct:.2f}%)"
+                    f"  Search iter {search_iteration}: Prob for {months} m: "
+                    f"{prob:.2f}% (Target: {target_probability_pct:.2f}%)"
                 )
-
             if progress_callback:
-                progress_callback({
-                    "type": "search_iter",
-                    "iteration": search_iteration,
-                    "working_months": current_test_months,
-                    "working_years": round(current_test_months / MONTHS_PER_YEAR, 1),
-                    "probability": round(current_iter_achieved_probability_pct, 2),
-                    "target": target_probability_pct,
-                    "sim_count": iter_sim_count,
-                    "step_size": months_increment_step,
-                })
-
-            if current_iter_achieved_probability_pct > highest_prob_if_target_not_met:
-                highest_prob_if_target_not_met = current_iter_achieved_probability_pct
-
-            if current_iter_achieved_probability_pct >= target_probability_pct:
-                if verbose:
-                    logger.info(f"  Target met at {current_test_months} months.")
-                # If we overshot with a large step, we might want to backtrack and refine
-                if months_increment_step > 1:
-                    logger.info(
-                        f"  Target met with step {months_increment_step}. Refining search by smaller steps..."
-                    )
-                    if progress_callback:
-                        progress_callback({
-                            "type": "search_refining",
-                            "working_months": current_test_months,
-                        })
-                    # Backtrack one big step, then search month by month
-                    current_test_months = max(
-                        starting_working_months,
-                        current_test_months - months_increment_step + 1,
-                    )
-                    months_increment_step = 1  # Switch to fine-grained search
-                    achieved_probability_at_prev_months = (
-                        -1
-                    )  # Reset for dynamic sim count when refining
-                    continue  # Restart loop with new current_test_months and step
-                return current_test_months, current_iter_achieved_probability_pct
-
-            achieved_probability_at_prev_months = (
-                current_iter_achieved_probability_pct  # Store for next dynamic count
-            )
-
-            # Adaptive step: if far from target, take larger steps.
-            # This is a simple heuristic for adapting step size.
-            if (
-                target_probability_pct - current_iter_achieved_probability_pct > 20
-                and months_increment_step < 24
-            ):  # If very far
-                months_increment_step = 24  # 2 years
-            elif (
-                target_probability_pct - current_iter_achieved_probability_pct > 10
-                and months_increment_step < 12
-            ):  # If moderately far
-                months_increment_step = 12  # 1 year
-            elif (
-                target_probability_pct - current_iter_achieved_probability_pct > 3
-                and months_increment_step < 6
-            ):
-                months_increment_step = 6  # 6 months
-            else:  # Close or overshot but not met target (should refine)
-                months_increment_step = (
-                    1  # Search month by month when close or needing refinement
+                progress_callback(
+                    {
+                        "type": "search_iter",
+                        "iteration": search_iteration,
+                        "working_months": months,
+                        "working_years": round(months / MONTHS_PER_YEAR, 1),
+                        "probability": round(prob, 2),
+                        "target": target_probability_pct,
+                        "sim_count": sim_count,
+                        "lo": lo,
+                        "hi": hi,
+                    }
                 )
+            if prob > highest_prob_if_target_not_met:
+                highest_prob_if_target_not_met = prob
+            return prob
 
-            current_test_months += months_increment_step
+        # --- Phase 1: Bracket ---
+        step = 12
+        current = starting_working_months
+        prob_at_lo = _test(current)
+
+        if prob_at_lo >= target_probability_pct:
+            if verbose:
+                logger.info(f"  Target met at starting point {current} months.")
+            return current, prob_at_lo
+
+        while current < max_total_months:
+            # Grow step while far from target
+            gap = target_probability_pct - prob_at_lo
+            if gap > 20:
+                step = max(step, 24)
+            elif gap > 10:
+                step = max(step, 12)
+            else:
+                step = max(step, 6)
+
+            next_months = min(current + step, max_total_months)
+            if next_months <= current:
+                break
+            prob = _test(next_months)
+            if prob >= target_probability_pct:
+                lo = current
+                hi = next_months
+                best_prob = prob
+                if verbose:
+                    logger.info(
+                        f"  Bracketed: lo={lo} m (miss), hi={hi} m (hit). Bisecting…"
+                    )
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "type": "search_refining",
+                            "working_months": hi,
+                            "lo": lo,
+                            "hi": hi,
+                        }
+                    )
+                break
+            lo = next_months
+            prob_at_lo = prob
+            current = next_months
+
+        if hi is None:
+            if verbose:
+                logger.warning(
+                    f"Search for '{p.Nickname}' reached max limit "
+                    f"({max_total_months / MONTHS_PER_YEAR:.1f} yrs). Target NOT met."
+                )
+                logger.warning(
+                    f"Highest probability achieved: {highest_prob_if_target_not_met:.2f}%."
+                )
+            return -1, highest_prob_if_target_not_met
+
+        # --- Phase 2: Bisect [lo, hi], track smallest month count that met target ---
+        best = hi
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            prob = _test(mid)
+            if prob >= target_probability_pct:
+                best = mid
+                best_prob = prob
+                hi = mid
+            else:
+                lo = mid
 
         if verbose:
-            logger.warning(
-                f"Search for '{p.Nickname}' reached max limit ({max_total_months_to_test / MONTHS_PER_YEAR:.1f} yrs). Target NOT met."
+            logger.info(
+                f"  Search complete: minimum {best} months "
+                f"({best / MONTHS_PER_YEAR:.1f} yrs) with prob {best_prob:.2f}%."
             )
-            logger.warning(
-                f"Highest probability achieved: {highest_prob_if_target_not_met:.2f}% at/before last test."
-            )
-        return -1, highest_prob_if_target_not_met
+        return best, best_prob

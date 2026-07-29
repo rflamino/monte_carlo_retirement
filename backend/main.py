@@ -5,7 +5,10 @@ from loguru import logger
 
 from config import Config, ConfigurationError, load_config_from_json
 from utils import log_input_parameters, log_simulation_results
-from simulation import RetirementMonteCarloSimulator
+from simulation import (
+    RetirementMonteCarloSimulator,
+    median_first_year_withdrawal_rate,
+)
 from plotting import plot_simulation_results, plot_portfolio_trajectories
 from constants import SMALL_EPSILON, MONTHS_PER_YEAR
 
@@ -88,6 +91,7 @@ def main():
         f"--- Running Final Detailed Simulation for '{config.Nickname}' ({config.num_simulations_main} sims) using {required_w_months} working months. ---"
     )
 
+    simulator.use_final_seeds()
     final_summary_df, final_trajectory_percentiles_df, final_sample_trajectories = (
         simulator.run_monte_carlo_simulations(
             working_months=required_w_months,
@@ -112,14 +116,8 @@ def main():
     )
     median_start_ret_bal = final_summary_df["Start Balance"].median()
 
-    # SWR based on T=0 expenses, not inflation-adjusted to retirement start here, as it's a common way to quote SWR
-    # The simulation correctly uses nominal expenses. This SWR is just an output metric.
-    initial_annual_expenses_t0 = config.monthly_expenses * MONTHS_PER_YEAR
-    swr = (
-        (initial_annual_expenses_t0 * 100.0) / median_start_ret_bal
-        if median_start_ret_bal > SMALL_EPSILON
-        else float("nan")
-    )
+    # Median first-year gross withdrawal / start balance (both nominal at retirement).
+    swr = median_first_year_withdrawal_rate(final_summary_df)
 
     log_simulation_results(
         config,

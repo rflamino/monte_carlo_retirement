@@ -70,17 +70,14 @@ class Config(BaseModel):
 
     inflation_rate_mean: float = Field(...)
     inflation_rate_volatility: float = Field(..., ge=0.0)
+    equity_inflation_correlation: float = Field(
+        0.0,
+        ge=-1.0,
+        le=1.0,
+        description="Correlation between equity log-returns and inflation log-rates.",
+    )
 
     num_simulations_main: int = Field(..., gt=0)
-    # Note: MINIMUM_SIMULATIONS_FOR_SEARCH_STEP is in constants, but we can't easily use it in pydantic default factory without import.
-    # We'll just validata in logic or use the same constant import if we move Config to a file that imports constants.
-    # For now, we assume the integer value is passed or handled.
-    # However, to check the validator logic for 'check_inflation_volatility' we need access to 'info.data'.
-
-    # We will import constants at the top if needed for MINIMUM_SIMULATIONS_FOR_SEARCH_STEP checking,
-    # but the class definition used it in `gt` constraint.
-    # Let's import constants to be safe and clean.
-
     num_simulations_search: int = Field(...)
     target_probability: float = Field(..., ge=0.0, le=100.0)
     starting_working_months_search: int = Field(..., ge=0)
@@ -95,10 +92,20 @@ class Config(BaseModel):
     @classmethod
     def check_inflation_volatility(cls, v: float, info: ValidationInfo) -> float:
         if v > 0.05:
-            # Safe access to nickname in case validation fails before nickname is set
             scen_name = info.data.get("Nickname", "N/A")
             logger.warning(
                 f"Inflation volatility ({v * 100:.1f}%) is relatively high for scenario '{scen_name}'."
+            )
+        return v
+
+    @field_validator("inv1_returns_volatility")
+    @classmethod
+    def check_equity_volatility(cls, v: float, info: ValidationInfo) -> float:
+        if v < 0.05:
+            scen_name = info.data.get("Nickname", "N/A")
+            logger.warning(
+                f"Equity (Inv1) volatility ({v * 100:.1f}%) is unusually low for scenario "
+                f"'{scen_name}'. Typical equity vol is ~15%. Results will understate sequence-of-returns risk."
             )
         return v
 

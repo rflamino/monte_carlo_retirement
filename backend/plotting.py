@@ -16,6 +16,7 @@ from constants import (
     TEXT_OUTPUT_COLOR,
     MONTHS_PER_YEAR,
 )
+from simulation import trajectory_retirement_year_index
 
 
 def plot_simulation_results(
@@ -94,7 +95,7 @@ def plot_simulation_results(
         f"Success: {analysis_summary['final_success_probability']:.1f}% (Target: {p.target_probability:.1f}%)",
         f"Med Start Bal: ${analysis_summary['median_start_retirement_balance']:,.0f}",
         f"Med Final Bal (succ): ${analysis_summary['median_final_balance']:,.0f}",
-        f"SWR (Med Start): {analysis_summary.get('SWR', float('nan')):.2f}%",
+        f"SWR (1st-yr withdraw rate): {analysis_summary.get('SWR', float('nan')):.2f}%",
     ]
 
     # Text Block Positioning
@@ -310,7 +311,7 @@ def plot_portfolio_trajectories(
                 f"Columns for percentile band {band['label']} (low: {band['low']}, high: {band['high']}) not found. Skipping band."
             )
 
-    working_years_float = working_months / MONTHS_PER_YEAR
+    working_years_float = float(trajectory_retirement_year_index(working_months))
     if len(years_x_axis) > 0 and 0 <= working_years_float <= max_years_plot:
         ax.axvline(
             x=working_years_float,

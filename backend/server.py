@@ -19,7 +19,11 @@ from pydantic import BaseModel, Field
 
 from config import Config, ConfigurationError
 from constants import MONTHS_PER_YEAR, SMALL_EPSILON
-from simulation import RetirementMonteCarloSimulator
+from simulation import (
+    RetirementMonteCarloSimulator,
+    median_first_year_withdrawal_rate,
+    trajectory_retirement_year_index,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +37,10 @@ class SimulationSummary(BaseModel):
     target_probability: float
     median_start_balance: float
     median_final_balance_successful: float
-    swr: Optional[float] = None
+    swr: Optional[float] = Field(
+        None,
+        description="Median first-year withdrawal rate (first-year gross withdrawal / start-of-retirement balance), as a percentage.",
+    )
     final_balance_percentiles: Dict[str, float]
 
 
@@ -172,6 +179,7 @@ def _run_simulation(
         f"({config.num_simulations_main} sims, {required_w_months} working months)"
     )
 
+    simulator.use_final_seeds()
     return _build_result(config, simulator, required_w_months)
 
 
@@ -293,6 +301,7 @@ async def simulate_stream(body: SimulationRequest):
                     ),
                 })
 
+                simulator.use_final_seeds()
                 result = _build_result(
                     config, simulator, required_w_months,
                 )
@@ -337,12 +346,7 @@ def _build_result(
     median_final = float(successful.median()) if not successful.empty else 0.0
     median_start = float(summary_df["Start Balance"].median())
 
-    annual_expenses_t0 = config.monthly_expenses * MONTHS_PER_YEAR
-    swr = (
-        (annual_expenses_t0 * 100.0) / median_start
-        if median_start > SMALL_EPSILON
-        else float("nan")
-    )
+    swr = median_first_year_withdrawal_rate(summary_df)
 
     pct_raw = summary_df["Final Balance"].quantile(
         [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
@@ -370,11 +374,15 @@ def _build_result(
             ),
         }
 
-    retirement_year = round(required_w_months / MONTHS_PER_YEAR, 1)
+    # Align reference line with trajectory year-grid index (ceil months/12).
+    retirement_year_index = float(trajectory_retirement_year_index(required_w_months))
+    required_working_years = round(required_w_months / MONTHS_PER_YEAR, 1)
     reference_lines = []
-    reference_lines.append({"name": "Retirement Starts", "year": retirement_year})
+    reference_lines.append({"name": "Retirement Starts", "year": retirement_year_index})
     for stream in (config.other_income_streams or []):
-        start_yr = round(retirement_year + stream.start_after_retirement_years, 1)
+        start_yr = round(
+            retirement_year_index + stream.start_after_retirement_years, 1
+        )
         reference_lines.append({
             "name": stream.name,
             "year": start_yr,
@@ -384,7 +392,7 @@ def _build_result(
         "scenario": config.Nickname,
         "summary": {
             "required_working_months": required_w_months,
-            "required_working_years": retirement_year,
+            "required_working_years": required_working_years,
             "success_probability": round(float(success_prob), 2),
             "target_probability": config.target_probability,
             "median_start_balance": round(median_start, 2),

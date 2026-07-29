@@ -1,6 +1,5 @@
 MONTHS_PER_YEAR: int = 12
 DEFAULT_PLOT_FILENAME: str = "retirement_projection.png"
-MINIMUM_SIMULATIONS_FOR_SEARCH_STEP: int = 100
 SMALL_EPSILON: float = 1e-6
 
 # Plotting constants

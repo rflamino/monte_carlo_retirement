@@ -32,7 +32,7 @@ export default function SummaryCard({ summary }) {
           accent={probColor}
         />
         <Metric label="Target Probability" value={`${s.target_probability}%`} />
-        <Metric label="SWR" value={s.swr != null ? `${s.swr}%` : '—'} />
+        <Metric label="1st-yr Withdrawal Rate" value={s.swr != null ? `${s.swr}%` : '—'} />
         <Metric label="Median Start Balance" value={fmt(s.median_start_balance)} />
         <Metric
           label="Median Final Balance (succ.)"
