@@ -1,12 +1,14 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import ConfigEditor from './components/ConfigEditor'
 import SummaryCard from './components/SummaryCard'
 import TrajectoryChart from './components/TrajectoryChart'
 import HistogramChart from './components/HistogramChart'
 import SimulationProgress from './components/SimulationProgress'
 import { runSimulationStream } from './api'
+import { applyTheme, getInitialTheme } from './theme'
 
 export default function App() {
+  const [theme, setTheme] = useState(getInitialTheme)
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -14,6 +16,14 @@ export default function App() {
   const [phase, setPhase] = useState(null)
   const [iterations, setIterations] = useState([])
   const t0 = useRef(0)
+
+  useEffect(() => {
+    applyTheme(theme)
+  }, [theme])
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))
+  }
 
   const handleSimulate = useCallback(async (config, workingMonthsOverride) => {
     setLoading(true)
@@ -56,8 +66,19 @@ export default function App() {
     <div className="app-layout">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h1>MC Retirement</h1>
-          <span className="subtitle">Monte Carlo Simulator</span>
+          <div className="sidebar-header-text">
+            <h1>MC Retirement</h1>
+            <span className="subtitle">Monte Carlo Simulator</span>
+          </div>
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={toggleTheme}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          >
+            {theme === 'dark' ? '☀' : '☾'}
+          </button>
         </div>
         <ConfigEditor onSimulate={handleSimulate} loading={loading} />
         {error && <div className="error-banner">{error}</div>}
@@ -85,6 +106,7 @@ export default function App() {
             <SummaryCard summary={results.summary} />
             {results.trajectory && (
               <TrajectoryChart
+                theme={theme}
                 trajectory={results.trajectory}
                 referenceLines={
                   results.reference_lines?.length
@@ -96,6 +118,7 @@ export default function App() {
               />
             )}
             <HistogramChart
+              theme={theme}
               finalBalances={results.histogram.final_balances}
               successProbability={results.summary.success_probability}
             />
