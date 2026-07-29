@@ -90,7 +90,7 @@ def log_simulation_results(
         f"Median Final Balance (Successful Sims Only): ${median_final_bal_successful:,.2f}"
     )
     logger.info(
-        f"Est. SWR (Nominal, 1st yr, on Median Start Bal, using T=0 expenses): {swr:.2f}%"
+        f"Est. First-year Withdrawal Rate (median, gross / start bal): {swr:.2f}%"
     )
 
     percentiles_final_balance = final_summary_df["Final Balance"].quantile(

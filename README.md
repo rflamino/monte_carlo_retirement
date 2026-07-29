@@ -109,7 +109,7 @@ The FastAPI server (`backend/server.py`) exposes the following endpoints. Intera
 
 | Field | Content |
 | :---- | :------ |
-| `summary` | Working months/years, success probability, SWR, median balances, percentiles (P1–P99) |
+| `summary` | Working months/years, success probability, first-year withdrawal rate (median), median balances, percentiles (P1–P99) |
 | `trajectory` | Year-indexed percentile arrays (P5–P95) and sample paths for time-series charts |
 | `histogram` | Raw `final_balances` and `start_balances` arrays for client-side binning |
 | `reference_lines` | List of `{ name, year }` for vertical reference lines (retirement start, other income streams) |
@@ -155,6 +155,8 @@ The simulation is controlled entirely by the JSON configuration file. Below is a
 
 **Asset 1 (Equities/Risk)**
 
+Returns are modeled as **lognormal** (log-returns). Config `inv1_returns_mean` / `inv1_returns_volatility` are interpreted as the **arithmetic** annual mean and standard deviation; the simulator converts them so that `E[annual gross return] = 1 + mean`. Monthly gross returns are never below zero.
+
 | Key | Type | Description |
 | :--- | :--- | :--- |
 | `allocation_inv1_pct` | Float | % of portfolio in Asset 1 (e.g., 0.60). |
@@ -162,7 +164,7 @@ The simulation is controlled entirely by the JSON configuration file. Below is a
 | `inv1_returns_volatility` | Float | Standard deviation of returns (e.g., 0.15). |
 
 **Asset 2 (Fixed Income/Safe)**
-*Modeled as a premium over inflation.*
+*Modeled as a premium over inflation (both components lognormal; combined multiplicatively each month).*
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
@@ -183,20 +185,23 @@ The simulation is controlled entirely by the JSON configuration file. Below is a
 
 ### 5\. Inflation Assumptions
 
+Inflation is also lognormal. The cumulative price level accrues **monthly** as `(1 + annual_inflation) ** (1/12)` equivalent (via the log-return factor), so partial working years do not over-apply a full year of inflation. Retirement expenses and income streams are priced at the **start** of each retirement year.
+
 | Key | Type | Description |
 | :--- | :--- | :--- |
 | `inflation_rate_mean` | Float | Average annual inflation (e.g., 0.062). |
 | `inflation_rate_volatility` | Float | Volatility of inflation. |
+| `equity_inflation_correlation` | Float | Correlation between equity log-returns and inflation log-rates (default `0.0`). |
 
 ### 6\. Simulation Technicals
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
 | `num_simulations_main` | Integer | Paths for the final run (default 1000; Rec: 10000+ for production). |
-| `num_simulations_search` | Integer | Paths for the "working months" search phase. |
+| `num_simulations_search` | Integer | Paths for the "working months" search phase (bracket + bisection). |
 | `starting_working_months_search` | Integer | Start searching for retirement date from this month (0 = today). |
-| `seed` | Integer/Null | Fix the random seed for reproducibility. `null` for random. |
-| `num_processes` | Integer/Null | CPU cores to use. `null` for auto-detect. |
+| `seed` | Integer/Null | Fix the random seed for reproducibility. `null` for random. Search and final runs use independent seed streams so the reported success probability is not selection-biased. |
+| `num_processes` | Integer/Null | CPU cores to use for parallel path evaluation. `null` or `1` runs sequentially (no auto-detect). |
 
 ### 7\. Other Income Streams
 
@@ -227,7 +232,7 @@ After a successful run, the CLI generates:
 
 The React frontend displays interactive versions of the same charts, plus:
 
-* **Summary card** — Working months, success probability, SWR, median balances, final balance percentiles.
+* **Summary card** — Working months, success probability, first-year withdrawal rate (median gross withdrawal / start-of-retirement balance), median balances, final balance percentiles.
 * **Portfolio trajectories** — Percentile bands (P5–P95, P25–P75), median line, sample paths, and vertical reference lines for retirement start and other income streams (State Pension, Rental Income, etc.).
 * **Final balance histogram** — Distribution of outcomes with median reference line.
 * **Live progress** — During simulation, shows search iterations, achieved probability vs target, and phase (search vs final run).
