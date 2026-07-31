@@ -1,48 +1,51 @@
 # Retirement Monte Carlo Simulator
 
-A robust Python-based Monte Carlo simulation tool designed to project portfolio longevity in retirement. This tool calculates the success probability of a retirement plan based on stochastic market returns, inflation, and specific tax regimes, helping determine the minimum working months required to achieve a target success rate.
+A Python Monte Carlo tool that projects portfolio longevity in retirement. It finds the minimum working months needed to hit a target success rate under stochastic returns, inflation, and tax rules.
 
-Includes a **FastAPI backend** and **React frontend** for interactive browser-based simulation and visualization.
+Includes a **FastAPI backend** and **React frontend** for interactive simulation and charts, plus a CLI that writes logs and PNG plots.
 
 ## Features
 
-* **Monte Carlo Simulation:** Runs thousands of scenarios (paths) to model market volatility and sequence of returns risk.
-* **JSON Configuration:** Fully configurable via an external JSON file—no code changes required to test different scenarios.
-* **Dual-Asset Portfolio:** Models a split between "Riskier/Equity" (Asset 1) and "Safer/Bonds" (Asset 2) with rebalancing logic.
-* **Advanced Tax Modeling:** Supports both **Realized Gains** (tax on sale) and **Annual Taxation** (e.g., "Come-Cotas") systems.
-* **Inflation Modeling:** Simulates inflation as a stochastic variable, affecting both expenses and asset returns.
-* **Additional Income Streams:** Handles complex income scenarios like Pensions, Social Security, or Rental income with specific start dates, durations, and tax rates.
-* **Web UI:** React frontend with interactive charts (trajectory percentile bands, final balance histogram), live simulation progress, vertical reference lines (retirement start, income streams), and a JSON config editor.
-* **REST API:** FastAPI backend exposing simulation as a service, with Swagger docs at `/docs`.
-* **CLI Mode:** Standalone CLI that generates PNG plots and log files.
+* **Monte Carlo simulation** — Thousands of paths for market volatility and sequence-of-returns risk.
+* **JSON configuration** — Scenarios are fully driven by config files (validated with Pydantic).
+* **Dual-asset portfolio** — Equity (Inv1) + inflation-linked safer asset (Inv2), with rebalancing and tax on sales/gains.
+* **Lognormal returns** — Arithmetic mean/vol in config; converted so \(E[\text{annual gross}] = 1 + \text{mean}\). Optional equity–inflation correlation (Cholesky).
+* **Monthly inflation accrual** — Price level compounds monthly (no full-year bump on partial years).
+* **Age-based other income** — Pensions, Social Security, rent, etc. via `current_age` + `start_at_age`.
+* **Success = funded spending** — A path succeeds if every retirement year’s expenses are covered by portfolio withdrawals and/or after-tax other income. Ending at \$0 is allowed when income alone covers spending.
+* **Bracket + bisection search** — Finds minimum working months; search and final runs use independent seed streams (no selection bias). Common random numbers across candidates.
+* **Web UI** — Form + JSON config editor, dark mode, field tip balloons, live SSE progress, trajectory bands with numbered timeline markers, final-balance histogram.
+* **REST API** — FastAPI with Swagger at `/docs`.
+* **CLI** — PNG plots and detailed logs.
 
 ## Prerequisites
 
 * Python 3.13+
-* [`uv`](https://docs.astral.sh/uv/) (recommended for dependency management and execution)
-* Node.js 18+ and npm (for the frontend only)
+* [`uv`](https://docs.astral.sh/uv/) (recommended)
+* Node.js 18+ and npm (frontend only)
 
 ## Project Structure
 
 ```
 monte_carlo_retirement/
-├── config.json            # Default scenario configuration
-├── pyproject.toml         # Python dependencies
-├── backend/               # Python backend
+├── config.json            # Default scenario
+├── jorge.json             # Example scenario
+├── pyproject.toml
+├── tests/                 # Regression tests (pytest)
+├── backend/
 │   ├── main.py            # CLI entry point
-│   ├── server.py          # FastAPI backend entry point
-│   ├── config.py          # Configuration loading & Pydantic validation
-│   ├── simulation.py      # Core Monte Carlo simulation logic
-│   ├── plotting.py        # Matplotlib plot generation (CLI mode)
-│   ├── utils.py           # Utility functions (logging, seeding)
-│   └── constants.py       # Shared constants
-└── frontend/              # React single-page app
+│   ├── server.py          # FastAPI entry point
+│   ├── config.py          # Pydantic models & validation
+│   ├── simulation.py      # Core Monte Carlo engine
+│   ├── plotting.py        # Matplotlib (CLI)
+│   ├── utils.py
+│   └── constants.py
+└── frontend/
     ├── package.json
-    ├── vite.config.js     # Dev proxy → backend on :8080
-    ├── index.html
+    ├── vite.config.js     # Dev proxy → :8080
     └── src/
         ├── App.jsx
-        ├── App.css
+        ├── theme.js       # Light/dark theme
         ├── api.js
         └── components/
             ├── ConfigEditor.jsx
@@ -69,29 +72,75 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:3000** in your browser. The default config loads automatically—edit it, then click **Run Simulation**. The UI streams live progress (search iterations, probability) during the run.
+Open **http://localhost:3000**. The default config loads automatically—edit via the form (or JSON), then **Run Simulation**. Progress streams live during search and the final run.
 
 ### Option B: CLI only
 
 ```bash
-# Default config (config.json in project root)
 uv run python backend/main.py
-
-# Custom config file
 uv run python backend/main.py my_scenario.json
 ```
 
+### Tests
+
+```bash
+uv sync --group dev
+uv run pytest tests/ -v
+```
+
+## How the model works
+
+### Timeline
+
+1. **Accumulation** — `working_months` of contributions, returns, inflation, and tax.
+2. **Retirement** — `retirement_years` of spending. Net portfolio withdrawal each year =  
+   \(\max(0,\ \text{expenses} - \text{after-tax other income})\).
+
+**Retirement age** = `current_age + working_months / 12`.
+
+### Success definition
+
+A path is **successful** if spending is fully funded in every retirement year (from the portfolio and/or other income). It may end with a \$0 balance if later income (e.g. a pension) covers expenses. Failure means a year where a withdrawal was still needed and the portfolio could not provide it.
+
+Reported success probability uses this flag (not “final balance > 0”).
+
+### First-year withdrawal rate
+
+Median over paths of  
+`(first-year gross portfolio withdrawal) / (balance at retirement start)`,  
+both nominal at the retirement date. Other income that offsets spending reduces this rate.
+
+### Other income timing
+
+For each stream, payments begin at:
+
+\[
+\max(\text{retirement age},\ \texttt{start\_at\_age})
+\]
+
+Duration is counted from that payment-start age. Indexed streams track the simulated price level from T=0; non-indexed streams lock a nominal amount at payment start.
+
+**Breaking change:** `start_after_retirement_years` was replaced by `start_at_age`. Old configs must be updated (set `current_age` and each stream’s `start_at_age`).
+
+### Search algorithm
+
+1. Coarse bracket (stepping working months until target probability is met).
+2. Bisection for the minimum months that still hit the target.
+3. Final detailed run with `num_simulations_main` on an independent seed stream.
+
+-----
+
 ## API Endpoints
 
-The FastAPI server (`backend/server.py`) exposes the following endpoints. Interactive Swagger docs are available at `http://localhost:8080/docs`.
+Interactive docs: `http://localhost:8080/docs`.
 
 | Method | Path | Description |
 | :----- | :--- | :---------- |
 | `GET` | `/api/health` | Health check |
-| `GET` | `/api/config/default` | Returns the bundled `config.json` as a template |
-| `POST` | `/api/validate` | Validates a configuration without running a simulation |
-| `POST` | `/api/simulate` | Runs the full simulation and returns data for plotting |
-| `POST` | `/api/simulate/stream` | Same as above, but streams progress events via SSE before returning the result |
+| `GET` | `/api/config/default` | Bundled `config.json` template |
+| `POST` | `/api/validate` | Validate config without simulating |
+| `POST` | `/api/simulate` | Full simulation → plot-ready JSON |
+| `POST` | `/api/simulate/stream` | Same, with SSE progress then result |
 
 ### `POST /api/simulate` request body
 
@@ -102,21 +151,19 @@ The FastAPI server (`backend/server.py`) exposes the following endpoints. Intera
 }
 ```
 
-* `config` — required. Same structure as `config.json`.
-* `working_months_override` — optional. If provided, skips the search phase and runs directly with this many working months.
+* `config` — required.
+* `working_months_override` — optional; skips search and runs with this many working months.
 
-### `POST /api/simulate` response
+### Response
 
 | Field | Content |
 | :---- | :------ |
-| `summary` | Working months/years, success probability, first-year withdrawal rate (median), median balances, percentiles (P1–P99) |
-| `trajectory` | Year-indexed percentile arrays (P5–P95) and sample paths for time-series charts |
-| `histogram` | Raw `final_balances` and `start_balances` arrays for client-side binning |
-| `reference_lines` | List of `{ name, year }` for vertical reference lines (retirement start, other income streams) |
+| `summary` | Working months/years, **retirement age**, success probability, first-year withdrawal rate, median balances, percentiles (P1–P99) |
+| `trajectory` | Year-indexed percentiles (P5–P95) and sample paths |
+| `histogram` | `final_balances` / `start_balances` for client binning |
+| `reference_lines` | `{ name, year }` markers (retirement start, income streams); years are from T=0 on the trajectory grid |
 
-### `POST /api/simulate/stream` (SSE)
-
-Streams JSON events (`data: {...}\n\n`) before the final result:
+### SSE events (`/api/simulate/stream`)
 
 | Event type | Content |
 | :--------- | :------ |
@@ -128,114 +175,122 @@ Streams JSON events (`data: {...}\n\n`) before the final result:
 
 -----
 
-## Configuration Reference (config.json)
+## Configuration Reference (`config.json`)
 
-The simulation is controlled entirely by the JSON configuration file. Below is a reference for all available parameters.
-
-### 1\. General Scenario Settings
+### 1. General scenario settings
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
-| `scenario` | String | A nickname for this simulation run (e.g., "Conservative"). Used in plots and logs. |
-| `current_age` | Float | Age at simulation start (today). Used with income-stream `start_at_age`. |
-| `retirement_years` | Integer | The duration of retirement to simulate in years (e.g., 50). |
-| `target_probability` | Float | The target success rate percentage (e.g., 99.0 for 99%). |
+| `scenario` | String | Nickname for plots and logs. |
+| `current_age` | Float | Age at T=0 (required). Used with income `start_at_age`. |
+| `retirement_years` | Integer | Years of retirement to simulate. |
+| `target_probability` | Float | Target success rate % (e.g. `97.0`). |
 
-### 2\. Current Financials (Time = 0)
-
-| Key | Type | Description |
-| :--- | :--- | :--- |
-| `initial_balance` | Float | Total portfolio value today. |
-| `monthly_contribution` | Float | Amount saved/invested per month while working. |
-| `contribution_growth_rate_annual` | Float | Annual percentage increase in contribution (e.g., 0.04). |
-| `monthly_expenses` | Float | Estimated monthly spending in retirement in today's purchasing power. |
-
-### 3\. Investment Allocation & Returns
-
-> **Note:** Asset 2 allocation is calculated automatically as `1 - allocation_inv1_pct`.
-
-**Asset 1 (Equities/Risk)**
-
-Returns are modeled as **lognormal** (log-returns). Config `inv1_returns_mean` / `inv1_returns_volatility` are interpreted as the **arithmetic** annual mean and standard deviation; the simulator converts them so that `E[annual gross return] = 1 + mean`. Monthly gross returns are never below zero.
+### 2. Current financials (T = 0)
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
-| `allocation_inv1_pct` | Float | % of portfolio in Asset 1 (e.g., 0.60). |
-| `inv1_returns_mean` | Float | Expected annual return arithmetic mean (e.g., 0.12). |
-| `inv1_returns_volatility` | Float | Standard deviation of returns (e.g., 0.15). |
+| `initial_balance` | Float | Portfolio value today. |
+| `monthly_contribution` | Float | Monthly savings while working. |
+| `contribution_growth_rate_annual` | Float | Annual growth of contributions (e.g. `0.04`). |
+| `monthly_expenses` | Float | Retirement spending in today’s purchasing power. |
 
-**Asset 2 (Fixed Income/Safe)**
-*Modeled as a premium over inflation (both components lognormal; combined multiplicatively each month).*
+### 3. Investment allocation & returns
 
-| Key | Type | Description |
-| :--- | :--- | :--- |
-| `inv2_premium_over_inflation_mean` | Float | Return above inflation (e.g., 0.05). |
-| `inv2_premium_over_inflation_volatility` | Float | Volatility of this premium. |
+Asset 2 weight = `1 - allocation_inv1_pct`.
 
-### 4\. Taxation Settings
-
-**System A: Realized Gains (Tax paid only upon sale)**
-
-  * `invX_use_realized_gains_tax_system`: **true**
-  * `invX_realized_gains_tax_rate`: Tax rate on gains (e.g., 0.15).
-
-**System B: Annual Tax (Tax deducted yearly on gains)**
-
-  * `invX_use_realized_gains_tax_system`: **false**
-  * `invX_annual_tax_on_gains_rate`: Tax rate on annual gains.
-
-### 5\. Inflation Assumptions
-
-Inflation is also lognormal. The cumulative price level accrues **monthly** as `(1 + annual_inflation) ** (1/12)` equivalent (via the log-return factor), so partial working years do not over-apply a full year of inflation. Retirement expenses and income streams are priced at the **start** of each retirement year.
+**Asset 1 (equities / risk)** — Lognormal. Config mean/vol are **arithmetic** annual; the engine converts so \(E[\text{gross}] = 1 + \text{mean}\).
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
-| `inflation_rate_mean` | Float | Average annual inflation (e.g., 0.062). |
-| `inflation_rate_volatility` | Float | Volatility of inflation. |
-| `equity_inflation_correlation` | Float | Correlation between equity log-returns and inflation log-rates (default `0.0`). |
+| `allocation_inv1_pct` | Float | Weight in Asset 1 (e.g. `0.60`). |
+| `inv1_returns_mean` | Float | Expected annual arithmetic return. |
+| `inv1_returns_volatility` | Float | Annual std. dev. (typical equities ~0.15; very low values understate risk). |
 
-### 6\. Simulation Technicals
-
-| Key | Type | Description |
-| :--- | :--- | :--- |
-| `num_simulations_main` | Integer | Paths for the final run (default 1000; Rec: 10000+ for production). |
-| `num_simulations_search` | Integer | Paths for the "working months" search phase (bracket + bisection). |
-| `starting_working_months_search` | Integer | Start searching for retirement date from this month (0 = today). |
-| `seed` | Integer/Null | Fix the random seed for reproducibility. `null` for random. Search and final runs use independent seed streams so the reported success probability is not selection-biased. |
-| `num_processes` | Integer/Null | CPU cores to use for parallel path evaluation. `null` or `1` runs sequentially (no auto-detect). |
-
-### 7\. Other Income Streams
-
-A list of objects defining extra income (Social Security, Rental, etc.).
-
-Retirement age is `current_age + working_months / 12`. Payments begin at **`max(retirement_age, start_at_age)`** (income is only paid during the retirement phase). Duration is counted from that payment-start age.
+**Asset 2 (safer)** — Inflation × real premium (both lognormal, multiplied monthly).
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
-| `name` | String | Label for the income. |
-| `monthly_amount_today` | Float | Monthly value in today's money. |
-| `start_at_age` | Float | Age when this income becomes eligible (e.g., 65 for a state pension). |
-| `duration_years` | Integer/Null | How long payments last after they begin. `null` = indefinitely. |
-| `inflation_indexed` | Boolean | `true`: Grows with inflation. `false`: Fixed nominal value at payment start. |
-| `tax_rate` | Float | Income tax applied to this stream. |
+| `inv2_premium_over_inflation_mean` | Float | Expected real premium. |
+| `inv2_premium_over_inflation_volatility` | Float | Premium volatility. |
+
+### 4. Taxation
+
+**Realized gains** (tax on sale / withdrawal of gains):
+
+* `invX_use_realized_gains_tax_system`: `true`
+* `invX_realized_gains_tax_rate`: rate on gains (e.g. `0.10`)
+
+**Annual tax on gains** (e.g. come-cotas style):
+
+* `invX_use_realized_gains_tax_system`: `false`
+* `invX_annual_tax_on_gains_rate`: annual rate on gains
+
+### 5. Inflation
+
+Accrues **monthly**. Expenses and income are priced at the **start** of each retirement year.
+
+| Key | Type | Description |
+| :--- | :--- | :--- |
+| `inflation_rate_mean` | Float | Average annual inflation. |
+| `inflation_rate_volatility` | Float | Inflation volatility. |
+| `equity_inflation_correlation` | Float | Corr. of equity and inflation log-shocks (default `0.0`). |
+
+### 6. Simulation technicals
+
+| Key | Type | Description |
+| :--- | :--- | :--- |
+| `num_simulations_main` | Integer | Paths in the final run (e.g. 1000+; 10000+ for production). |
+| `num_simulations_search` | Integer | Paths per search probe (bracket + bisection). Small values make the chosen months noisier vs the final run. |
+| `starting_working_months_search` | Integer | Where the search starts (`0` = today). |
+| `seed` | Integer / `null` | Reproducibility; `null` = random. Search and final use separate streams. |
+| `num_processes` | Integer / `null` | Parallel workers; `null` or `1` = sequential. |
+
+### 7. Other income streams
+
+List of objects. Example:
+
+```json
+{
+  "name": "State Pension",
+  "monthly_amount_today": 4000.0,
+  "start_at_age": 65.0,
+  "duration_years": null,
+  "inflation_indexed": true,
+  "tax_rate": 0.275
+}
+```
+
+| Key | Type | Description |
+| :--- | :--- | :--- |
+| `name` | String | Label (charts, logs, reference markers). |
+| `monthly_amount_today` | Float | Monthly amount in T=0 real terms. |
+| `start_at_age` | Float | Age when the stream becomes eligible. |
+| `duration_years` | Integer / `null` | Years of payments after they begin; `null` = indefinite. |
+| `inflation_indexed` | Boolean | `true`: tracks inflation from T=0. `false`: fixed nominal at payment start. |
+| `tax_rate` | Float | Flat tax on this stream (`0`–`1`). |
 
 -----
 
 ## Outputs
 
-### CLI mode
+### CLI
 
-After a successful run, the CLI generates:
-
-  * **Log File:** `ret_proj_log_YYYYMMDD_HHMMSS.log` containing detailed run statistics.
-  * **Histogram:** `ret_proj_[ScenarioName]_[Timestamp]_HIST.png` showing the distribution of final balances.
-  * **Trajectories:** `ret_proj_[ScenarioName]_[Timestamp]_TRAJ.png` showing the median, 5th, and 95th percentile portfolio values over time.
+* **Log:** `ret_proj_log_YYYYMMDD_HHMMSS.log`
+* **Histogram:** `ret_proj_[Scenario]_[Timestamp]_HIST.png`
+* **Trajectories:** `ret_proj_[Scenario]_[Timestamp]_TRAJ.png`
 
 ### Web UI
 
-The React frontend displays interactive versions of the same charts, plus:
+* **Config editor** — Form sections with tips, Load/Save/Reset, Form ↔ JSON, dark mode toggle.
+* **Summary card** — Working period, retirement age, success %, target, first-year withdrawal rate, median balances, percentiles.
+* **Portfolio trajectories** — Percentile bands, median, sample paths; numbered reference markers with a chip legend (retirement, income streams).
+* **Final balance histogram** — Outcome distribution with median line.
+* **Live progress** — Search iterations and probability vs target.
 
-* **Summary card** — Working months, retirement age, success probability, first-year withdrawal rate (median gross withdrawal / start-of-retirement balance), median balances, final balance percentiles.
-* **Portfolio trajectories** — Percentile bands (P5–P95, P25–P75), median line, sample paths, and vertical reference lines for retirement start and other income streams (State Pension, Rental Income, etc.).
-* **Final balance histogram** — Distribution of outcomes with median reference line.
-* **Live progress** — During simulation, shows search iterations, achieved probability vs target, and phase (search vs final run).
+## Notes & caveats
+
+* Equity volatility in sample configs may be intentionally low for experimentation; raise toward ~15% for more realistic sequence risk.
+* Spending is modeled as constant real `monthly_expenses` (no healthcare ramp or spending smile).
+* Other-income tax is a flat rate, not progressive brackets.
+* Prefer a larger `num_simulations_search` if the final-run success rate often undershoots the search result.
