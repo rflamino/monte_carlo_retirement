@@ -160,6 +160,7 @@ Interactive docs: `http://localhost:8080/docs`.
 | :---- | :------ |
 | `summary` | Working months/years, **retirement age**, success probability, first-year withdrawal rate, median balances, percentiles (P1–P99) |
 | `trajectory` | Year-indexed percentiles (P5–P95) and sample paths |
+| `withdrawal_rate` | Real annual withdrawal rate (% of start-of-retirement balance, inflation-adjusted) percentiles by year from T=0 |
 | `histogram` | `final_balances` / `start_balances` for client binning |
 | `reference_lines` | `{ name, year }` markers (retirement start, income streams); years are from T=0 on the trajectory grid |
 
@@ -285,6 +286,7 @@ List of objects. Example:
 * **Config editor** — Form sections with tips, Load/Save/Reset, Form ↔ JSON, dark mode toggle.
 * **Summary card** — Working period, retirement age, success %, target, first-year withdrawal rate, median balances, percentiles.
 * **Portfolio trajectories** — Percentile bands, median, sample paths; numbered reference markers with a chip legend (retirement, income streams).
+* **Withdrawal rate over time** — Inflation-adjusted portfolio withdrawal as % of the balance at retirement start (Trinity/Bengen basis), with a **4% reference line**. Constant-real spending is flat; the series falls when pensions or other income begin.
 * **Final balance histogram** — Outcome distribution with median line.
 * **Live progress** — Search iterations and probability vs target.
 

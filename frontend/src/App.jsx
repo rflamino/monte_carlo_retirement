@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import ConfigEditor from './components/ConfigEditor'
 import SummaryCard from './components/SummaryCard'
 import TrajectoryChart from './components/TrajectoryChart'
+import WithdrawalRateChart from './components/WithdrawalRateChart'
 import HistogramChart from './components/HistogramChart'
 import SimulationProgress from './components/SimulationProgress'
 import { runSimulationStream } from './api'
@@ -115,6 +116,13 @@ export default function App() {
                       ? [{ name: 'Retirement Starts', year: results.summary.required_working_years }]
                       : []
                 }
+              />
+            )}
+            {results.withdrawal_rate && (
+              <WithdrawalRateChart
+                theme={theme}
+                withdrawalRate={results.withdrawal_rate}
+                referenceLines={results.reference_lines || []}
               />
             )}
             <HistogramChart

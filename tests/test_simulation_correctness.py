@@ -70,7 +70,7 @@ def test_success_probability_non_decreasing_in_working_months():
 
     probs = []
     for months in range(0, 61, 6):
-        summary, _, _ = sim.run_monte_carlo_simulations(months, 80)
+        summary, _, _, _ = sim.run_monte_carlo_simulations(months, 80)
         probs.append(sim._success_probability(summary))
 
     for i in range(1, len(probs)):
@@ -156,7 +156,7 @@ def test_withdrawal_rate_with_zero_inflation():
     )
     sim = RetirementMonteCarloSimulator(config)
     sim.use_final_seeds()
-    summary, _, _ = sim.run_monte_carlo_simulations(working_months=0, num_simulations=20)
+    summary, _, _, _ = sim.run_monte_carlo_simulations(working_months=0, num_simulations=20)
 
     annual = monthly_expenses * MONTHS_PER_YEAR
     expected_rate = (annual / initial) * 100.0
@@ -196,7 +196,7 @@ def test_bisection_finds_true_minimum():
                 "Inflation At Retirement": [1.0] * num_simulations,
             }
         )
-        return df, None, None
+        return df, None, None, None
 
     sim.run_monte_carlo_simulations = fake_run  # type: ignore[method-assign]
     months, prob = sim.find_minimum_working_months(verbose=False)
@@ -312,7 +312,75 @@ def test_pension_covers_after_portfolio_depleted():
 
     # Summary success probability uses Success, not Final Balance > 0
     sim.use_final_seeds()
-    summary, _, _ = sim.run_monte_carlo_simulations(0, 5)
+    summary, _, _, _ = sim.run_monte_carlo_simulations(0, 5)
     assert sim._success_probability(summary) == pytest.approx(100.0)
     assert (summary["Final Balance"] <= SMALL_EPSILON).all()
+
+
+def test_withdrawal_rate_trajectory_matches_first_year():
+    """Year-0 real WR equals First Year Gross Withdrawal / Start Balance."""
+    monthly_expenses = 1_000.0
+    initial = 200_000.0
+    config = _base_config(
+        initial_balance=initial,
+        monthly_contribution=0.0,
+        monthly_expenses=monthly_expenses,
+        retirement_years=5,
+        inflation_rate_mean=0.0,
+        inflation_rate_volatility=0.0,
+        inv1_returns_mean=0.0,
+        inv1_returns_volatility=0.0,
+        inv2_premium_over_inflation_mean=0.0,
+        inv2_premium_over_inflation_volatility=0.0,
+        inv1_use_realized_gains_tax_system=False,
+        inv1_annual_tax_on_gains_rate=0.0,
+        inv2_use_realized_gains_tax_system=False,
+        inv2_annual_tax_on_gains_rate=0.0,
+        seed=1,
+    )
+    sim = RetirementMonteCarloSimulator(config)
+    result = sim._run_single_simulation_path(working_months=0, path_seed=1)
+    wr = result["WithdrawalRateTrajectory"]
+    assert len(wr) == 5
+    expected = (result["First Year Gross Withdrawal"] / result["Start Balance"]) * 100.0
+    assert wr[0] == pytest.approx(expected, abs=1e-6)
+    # Flat expenses, zero inflation → constant real rate each year
+    assert wr[1] == pytest.approx(wr[0], abs=1e-6)
+
+    summary, _, _, wr_pct = sim.run_monte_carlo_simulations(0, 10)
+    assert wr_pct is not None and not wr_pct.empty
+    assert abs(wr_pct.iloc[0][0.50] - expected) < 0.5
+    swr = median_first_year_withdrawal_rate(summary)
+    assert abs(swr - wr_pct.iloc[0][0.50]) < 0.5
+
+
+def test_real_withdrawal_rate_flat_with_deterministic_inflation():
+    """Constant real spending → real WR stays flat even when inflation compounds."""
+    monthly_expenses = 1_000.0
+    initial = 240_000.0  # 5% of start ≈ annual expenses
+    config = _base_config(
+        initial_balance=initial,
+        monthly_contribution=0.0,
+        monthly_expenses=monthly_expenses,
+        retirement_years=8,
+        inflation_rate_mean=0.06,
+        inflation_rate_volatility=0.0,
+        inv1_returns_mean=0.06,  # keep portfolio alive; tax off
+        inv1_returns_volatility=0.0,
+        inv2_premium_over_inflation_mean=0.0,
+        inv2_premium_over_inflation_volatility=0.0,
+        inv1_use_realized_gains_tax_system=False,
+        inv1_annual_tax_on_gains_rate=0.0,
+        inv2_use_realized_gains_tax_system=False,
+        inv2_annual_tax_on_gains_rate=0.0,
+        seed=2,
+    )
+    sim = RetirementMonteCarloSimulator(config)
+    result = sim._run_single_simulation_path(working_months=0, path_seed=3)
+    wr = result["WithdrawalRateTrajectory"]
+    assert result["Success"] is True
+    # Real rate should match year-0 and not drift with inflation
+    for rate in wr:
+        assert rate == pytest.approx(wr[0], abs=1e-4)
+    assert wr[0] == pytest.approx(5.0, abs=0.05)
 

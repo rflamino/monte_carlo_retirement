@@ -92,11 +92,14 @@ def main():
     )
 
     simulator.use_final_seeds()
-    final_summary_df, final_trajectory_percentiles_df, final_sample_trajectories = (
-        simulator.run_monte_carlo_simulations(
-            working_months=required_w_months,
-            num_simulations=config.num_simulations_main,
-        )
+    (
+        final_summary_df,
+        final_trajectory_percentiles_df,
+        final_sample_trajectories,
+        _,
+    ) = simulator.run_monte_carlo_simulations(
+        working_months=required_w_months,
+        num_simulations=config.num_simulations_main,
     )
 
     if final_summary_df.empty:

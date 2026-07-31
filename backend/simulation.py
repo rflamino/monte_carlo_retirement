@@ -320,13 +320,17 @@ class RetirementMonteCarloSimulator:
         Runs a single simulation path for a given number of working months and seed.
 
         Returns a dict with Start Balance, Final Balance, Success (funded all spending),
-        First Year Gross Withdrawal, Trajectory, and Inflation At Retirement.
+        First Year Gross Withdrawal, Trajectory, WithdrawalRateTrajectory (real % of
+        start-of-retirement balance per retirement year), and Inflation At Retirement.
         """
         p = self.params_model
         total_months = working_months + p.retirement_years * MONTHS_PER_YEAR
         shocks = self._draw_shock_path(max(total_months, 1), path_seed)
 
         yearly_trajectory: List[float] = [p.initial_balance]
+        # Real withdrawal rate vs nest egg at retirement (Bengen/Trinity style):
+        # (nominal gross withdraw / start_balance) * (I_ret / I_year_start) * 100.
+        withdrawal_rate_trajectory: List[float] = []
         # Price level at the start of each simulation year (idx 0 = T0).
         yearly_master_inflation_factors: List[float] = [1.0]
 
@@ -663,16 +667,35 @@ class RetirementMonteCarloSimulator:
                 if year_funding_failed:
                     break
 
+            year_gross_withdrawal = (
+                total_gross_withdraw_inv1_this_year + total_gross_withdraw_inv2_this_year
+            )
+            # Deflate to retirement-date real $ so a classic constant-real draw is flat.
+            if (
+                balance_at_retirement_start > SMALL_EPSILON
+                and price_level_at_year_start > SMALL_EPSILON
+            ):
+                year_wr_pct = (
+                    year_gross_withdrawal
+                    / balance_at_retirement_start
+                    * (inflation_at_retirement / price_level_at_year_start)
+                ) * 100.0
+            else:
+                year_wr_pct = 0.0
+
             if year_funding_failed:
                 path_succeeded = False
                 yearly_trajectory.append(max(0.0, balance_inv1 + balance_inv2))
+                # Partial year — still record observed draw vs start nest egg.
+                withdrawal_rate_trajectory.append(year_wr_pct)
+                if year_num == 0:
+                    first_year_gross_withdrawal = year_gross_withdrawal
                 break
 
+            withdrawal_rate_trajectory.append(year_wr_pct)
+
             if year_num == 0:
-                first_year_gross_withdrawal = (
-                    total_gross_withdraw_inv1_this_year
-                    + total_gross_withdraw_inv2_this_year
-                )
+                first_year_gross_withdrawal = year_gross_withdrawal
 
             if (
                 not p.inv1_use_realized_gains_tax_system
@@ -727,23 +750,38 @@ class RetirementMonteCarloSimulator:
         elif current_len > expected_len:
             yearly_trajectory = yearly_trajectory[:expected_len]
 
+        # Pad remaining retirement years as NaN (no observation after failure / early stop).
+        while len(withdrawal_rate_trajectory) < p.retirement_years:
+            withdrawal_rate_trajectory.append(float("nan"))
+        if len(withdrawal_rate_trajectory) > p.retirement_years:
+            withdrawal_rate_trajectory = withdrawal_rate_trajectory[: p.retirement_years]
+
         return {
             "Start Balance": balance_at_retirement_start,
             "Final Balance": max(0, final_total_balance),
             "Success": bool(path_succeeded),
             "First Year Gross Withdrawal": first_year_gross_withdrawal,
             "Trajectory": yearly_trajectory,
+            "WithdrawalRateTrajectory": withdrawal_rate_trajectory,
             "Inflation At Retirement": inflation_at_retirement,
         }
 
     def run_monte_carlo_simulations(
         self, working_months: int, num_simulations: int
-    ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Optional[List[List[float]]]]:
+    ) -> Tuple[
+        pd.DataFrame,
+        Optional[pd.DataFrame],
+        Optional[List[List[float]]],
+        Optional[pd.DataFrame],
+    ]:
         """
         Runs multiple simulation paths, either sequentially or in parallel.
 
         Uses common random numbers: path seeds are derived from the active seed
         stream and are identical across different working_months candidates.
+
+        Returns summary_df, trajectory percentiles, sample paths, and withdrawal-rate
+        percentiles (indexed by retirement year 0..N-1, real % of start balance).
         """
         path_seeds = self._path_seeds(num_simulations)
         num_procs_to_use = (
@@ -840,7 +878,31 @@ class RetirementMonteCarloSimulator:
             except Exception as e:
                 logger.error(f"Error processing trajectories: {e}", exc_info=True)
 
-        return summary_df, trajectory_percentiles_df, sample_trajectories_list
+        wr_percentiles_df: Optional[pd.DataFrame] = None
+        wr_raw = [
+            r["WithdrawalRateTrajectory"]
+            for r in all_results_list
+            if r.get("WithdrawalRateTrajectory")
+        ]
+        if wr_raw:
+            try:
+                wr_df = pd.DataFrame(wr_raw).transpose()
+                if not wr_df.empty:
+                    wr_percentiles_df = wr_df.quantile(
+                        [0.05, 0.25, 0.50, 0.75, 0.95], axis=1
+                    ).transpose()
+            except Exception as e:
+                logger.error(
+                    f"Error processing withdrawal-rate trajectories: {e}",
+                    exc_info=True,
+                )
+
+        return (
+            summary_df,
+            trajectory_percentiles_df,
+            sample_trajectories_list,
+            wr_percentiles_df,
+        )
 
     def _success_probability(self, summary_df: pd.DataFrame) -> float:
         """Share of paths that funded all retirement spending (may end at $0)."""
@@ -891,7 +953,7 @@ class RetirementMonteCarloSimulator:
                     f"Search iter {search_iteration}: Testing {months} m "
                     f"({months / MONTHS_PER_YEAR:.1f} yrs) with {sim_count} sims."
                 )
-            summary_df, _, _ = self.run_monte_carlo_simulations(months, sim_count)
+            summary_df, _, _, _ = self.run_monte_carlo_simulations(months, sim_count)
             prob = self._success_probability(summary_df)
             if verbose:
                 logger.info(

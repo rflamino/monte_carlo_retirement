@@ -54,6 +54,16 @@ class TrajectoryData(BaseModel):
     sample_paths: List[List[float]]
 
 
+class WithdrawalRateData(BaseModel):
+    """
+    Real withdrawal rate by year from T=0: inflation-adjusted portfolio withdrawal
+    as a percentage of the balance at retirement start (Trinity/Bengen basis).
+    """
+
+    years: List[float]
+    percentiles: Dict[str, List[Optional[float]]]
+
+
 class HistogramData(BaseModel):
     final_balances: List[float]
     start_balances: List[float]
@@ -68,6 +78,7 @@ class SimulationResponse(BaseModel):
     scenario: str
     summary: SimulationSummary
     trajectory: Optional[TrajectoryData] = None
+    withdrawal_rate: Optional[WithdrawalRateData] = None
     histogram: HistogramData
     reference_lines: List[ReferenceLineData] = []
 
@@ -333,7 +344,7 @@ def _build_result(
     required_w_months: int,
 ) -> dict:
     """Run final simulation and assemble the response dict."""
-    summary_df, traj_pct_df, sample_trajectories = (
+    summary_df, traj_pct_df, sample_trajectories, wr_pct_df = (
         simulator.run_monte_carlo_simulations(
             working_months=required_w_months,
             num_simulations=config.num_simulations_main,
@@ -402,6 +413,25 @@ def _build_result(
             "year": start_yr,
         })
 
+    withdrawal_rate_data = None
+    if wr_pct_df is not None and not wr_pct_df.empty:
+        wr_years = [
+            round(retirement_year_index + i, 1) for i in range(len(wr_pct_df))
+        ]
+        wr_pct_dict: Dict[str, List[Optional[float]]] = {}
+        for col in wr_pct_df.columns:
+            series = []
+            for v in wr_pct_df[col]:
+                if v is None or (isinstance(v, float) and math.isnan(v)):
+                    series.append(None)
+                else:
+                    series.append(round(float(v), 3))
+            wr_pct_dict[f"p{int(col * 100)}"] = series
+        withdrawal_rate_data = {
+            "years": wr_years,
+            "percentiles": wr_pct_dict,
+        }
+
     return {
         "scenario": config.Nickname,
         "summary": {
@@ -416,6 +446,7 @@ def _build_result(
             "final_balance_percentiles": balance_percentiles,
         },
         "trajectory": trajectory_data,
+        "withdrawal_rate": withdrawal_rate_data,
         "histogram": {
             "final_balances": [
                 round(float(v), 2) for v in summary_df["Final Balance"]
