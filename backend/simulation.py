@@ -328,9 +328,12 @@ class RetirementMonteCarloSimulator:
         shocks = self._draw_shock_path(max(total_months, 1), path_seed)
 
         yearly_trajectory: List[float] = [p.initial_balance]
+        # Price level (cumulative inflation from T=0) at each trajectory point.
+        trajectory_price_levels: List[float] = [1.0]
         # Real withdrawal rate vs nest egg at retirement (Bengen/Trinity style):
         # (nominal gross withdraw / start_balance) * (I_ret / I_year_start) * 100.
         withdrawal_rate_trajectory: List[float] = []
+        years_to_ruin: float = float("nan")  # 1-based years into retirement; NaN if success
         # Price level at the start of each simulation year (idx 0 = T0).
         yearly_master_inflation_factors: List[float] = [1.0]
 
@@ -421,6 +424,7 @@ class RetirementMonteCarloSimulator:
                 total_balance = balance_inv1 + balance_inv2
                 if m_idx % MONTHS_PER_YEAR == 0:
                     yearly_trajectory.append(total_balance)
+                    trajectory_price_levels.append(master_cumulative_inflation)
 
                 bal_inv1_start_tax_year_acc = total_balance * p.allocation_inv1_pct
                 bal_inv2_start_tax_year_acc = total_balance * p.allocation_inv2_pct
@@ -448,8 +452,10 @@ class RetirementMonteCarloSimulator:
                 > SMALL_EPSILON
             ):
                 yearly_trajectory.append(balance_at_retirement_start)
+                trajectory_price_levels.append(inflation_at_retirement)
         elif working_months == 0 and len(yearly_trajectory) == 0:
             yearly_trajectory.append(p.initial_balance)
+            trajectory_price_levels.append(1.0)
 
         # Pre-calculate fixed nominal amounts for non-inflation-indexed income streams
         path_specific_other_income_streams_details = []
@@ -560,6 +566,7 @@ class RetirementMonteCarloSimulator:
                 and monthly_withdrawal_needed > SMALL_EPSILON
             ):
                 path_succeeded = False
+                years_to_ruin = float(year_num + 1)
                 break
 
             bal_inv1_start_tax_year_ret, bal_inv2_start_tax_year_ret = (
@@ -685,7 +692,9 @@ class RetirementMonteCarloSimulator:
 
             if year_funding_failed:
                 path_succeeded = False
+                years_to_ruin = float(year_num + 1)
                 yearly_trajectory.append(max(0.0, balance_inv1 + balance_inv2))
+                trajectory_price_levels.append(master_cumulative_inflation)
                 # Partial year — still record observed draw vs start nest egg.
                 withdrawal_rate_trajectory.append(year_wr_pct)
                 if year_num == 0:
@@ -724,6 +733,7 @@ class RetirementMonteCarloSimulator:
 
             total_balance_after_annual_tax = balance_inv1 + balance_inv2
             yearly_trajectory.append(total_balance_after_annual_tax)
+            trajectory_price_levels.append(master_cumulative_inflation)
 
             # Keep going with a $0 portfolio when income covers future spending.
             if total_balance_after_annual_tax > SMALL_EPSILON:
@@ -746,9 +756,27 @@ class RetirementMonteCarloSimulator:
                 if not path_succeeded
                 else (yearly_trajectory[-1] if yearly_trajectory else 0.0)
             )
-            yearly_trajectory.extend([padding_value] * (expected_len - current_len))
+            pad_n = expected_len - current_len
+            yearly_trajectory.extend([padding_value] * pad_n)
+            last_px = (
+                trajectory_price_levels[-1] if trajectory_price_levels else 1.0
+            )
+            trajectory_price_levels.extend([last_px] * pad_n)
         elif current_len > expected_len:
             yearly_trajectory = yearly_trajectory[:expected_len]
+            trajectory_price_levels = trajectory_price_levels[:expected_len]
+
+        # Align price-level series length with trajectory.
+        while len(trajectory_price_levels) < len(yearly_trajectory):
+            trajectory_price_levels.append(
+                trajectory_price_levels[-1] if trajectory_price_levels else 1.0
+            )
+        trajectory_price_levels = trajectory_price_levels[: len(yearly_trajectory)]
+
+        real_trajectory = [
+            (nom / px if px > SMALL_EPSILON else 0.0)
+            for nom, px in zip(yearly_trajectory, trajectory_price_levels)
+        ]
 
         # Pad remaining retirement years as NaN (no observation after failure / early stop).
         while len(withdrawal_rate_trajectory) < p.retirement_years:
@@ -760,8 +788,10 @@ class RetirementMonteCarloSimulator:
             "Start Balance": balance_at_retirement_start,
             "Final Balance": max(0, final_total_balance),
             "Success": bool(path_succeeded),
+            "YearsToRuin": years_to_ruin,
             "First Year Gross Withdrawal": first_year_gross_withdrawal,
             "Trajectory": yearly_trajectory,
+            "RealTrajectory": real_trajectory,
             "WithdrawalRateTrajectory": withdrawal_rate_trajectory,
             "Inflation At Retirement": inflation_at_retirement,
         }
@@ -773,6 +803,8 @@ class RetirementMonteCarloSimulator:
         Optional[pd.DataFrame],
         Optional[List[List[float]]],
         Optional[pd.DataFrame],
+        Optional[pd.DataFrame],
+        Optional[List[List[float]]],
     ]:
         """
         Runs multiple simulation paths, either sequentially or in parallel.
@@ -780,8 +812,8 @@ class RetirementMonteCarloSimulator:
         Uses common random numbers: path seeds are derived from the active seed
         stream and are identical across different working_months candidates.
 
-        Returns summary_df, trajectory percentiles, sample paths, and withdrawal-rate
-        percentiles (indexed by retirement year 0..N-1, real % of start balance).
+        Returns summary_df, nominal trajectory percentiles, sample paths,
+        withdrawal-rate percentiles, real trajectory percentiles, real sample paths.
         """
         path_seeds = self._path_seeds(num_simulations)
         num_procs_to_use = (
@@ -827,6 +859,7 @@ class RetirementMonteCarloSimulator:
                 "Start Balance": r["Start Balance"],
                 "Final Balance": r["Final Balance"],
                 "Success": bool(r.get("Success", r["Final Balance"] > SMALL_EPSILON)),
+                "YearsToRuin": r.get("YearsToRuin", float("nan")),
                 "First Year Gross Withdrawal": r["First Year Gross Withdrawal"],
                 "Inflation At Retirement": r.get("Inflation At Retirement", 1.0),
             }
@@ -839,9 +872,18 @@ class RetirementMonteCarloSimulator:
             for r in all_results_list
             if "Trajectory" in r and r["Trajectory"]
         ]
+        real_trajectories_raw = [
+            r["RealTrajectory"]
+            for r in all_results_list
+            if r.get("RealTrajectory")
+        ]
 
         trajectory_percentiles_df: Optional[pd.DataFrame] = None
+        real_trajectory_percentiles_df: Optional[pd.DataFrame] = None
         sample_trajectories_list: Optional[List[List[float]]] = None
+        sample_real_trajectories_list: Optional[List[List[float]]] = None
+
+        percentiles_to_calc = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
 
         if trajectories_raw:
             try:
@@ -855,7 +897,6 @@ class RetirementMonteCarloSimulator:
                 trajectory_df = pd.DataFrame(trajectories_raw).transpose()
 
                 if not trajectory_df.empty:
-                    percentiles_to_calc = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
                     trajectory_percentiles_df = trajectory_df.quantile(
                         percentiles_to_calc, axis=1
                     ).transpose()
@@ -865,11 +906,17 @@ class RetirementMonteCarloSimulator:
                         actual_num_to_sample = min(
                             num_sample_paths, trajectory_df.shape[1]
                         )
-                        sample_trajectories_list = trajectory_df.sample(
+                        sampled = trajectory_df.sample(
                             n=actual_num_to_sample,
                             axis=1,
                             random_state=self.main_seed,
-                        ).values.T.tolist()
+                        )
+                        sample_trajectories_list = sampled.values.T.tolist()
+                        if real_trajectories_raw:
+                            real_df_full = pd.DataFrame(real_trajectories_raw).transpose()
+                            sample_real_trajectories_list = real_df_full.loc[
+                                :, sampled.columns
+                            ].values.T.tolist()
             except ValueError as ve:
                 logger.error(
                     f"Error processing trajectories, possibly due to inconsistent lengths: {ve}",
@@ -877,6 +924,16 @@ class RetirementMonteCarloSimulator:
                 )
             except Exception as e:
                 logger.error(f"Error processing trajectories: {e}", exc_info=True)
+
+        if real_trajectories_raw:
+            try:
+                real_df = pd.DataFrame(real_trajectories_raw).transpose()
+                if not real_df.empty:
+                    real_trajectory_percentiles_df = real_df.quantile(
+                        percentiles_to_calc, axis=1
+                    ).transpose()
+            except Exception as e:
+                logger.error(f"Error processing real trajectories: {e}", exc_info=True)
 
         wr_percentiles_df: Optional[pd.DataFrame] = None
         wr_raw = [
@@ -902,6 +959,8 @@ class RetirementMonteCarloSimulator:
             trajectory_percentiles_df,
             sample_trajectories_list,
             wr_percentiles_df,
+            real_trajectory_percentiles_df,
+            sample_real_trajectories_list,
         )
 
     def _success_probability(self, summary_df: pd.DataFrame) -> float:
@@ -916,12 +975,16 @@ class RetirementMonteCarloSimulator:
         self,
         verbose: bool = True,
         progress_callback: Optional[Callable[[dict], None]] = None,
-    ) -> Tuple[int, float]:
+    ) -> Tuple[int, float, List[Dict[str, float]]]:
         """
         Finds the minimum working months to achieve the target success probability
         via a coarse bracket scan followed by bisection.
 
         Uses the search seed stream with common random numbers across candidates.
+
+        Returns (months, probability, search_curve) where search_curve is a list of
+        {working_months, working_years, probability} probe points (may include
+        duplicates if the same month is retested).
         """
         self.use_search_seeds()
         p = self.params_model
@@ -929,6 +992,7 @@ class RetirementMonteCarloSimulator:
         target_probability_pct = p.target_probability
         sim_count = p.num_simulations_search
         max_total_months = starting_working_months + 70 * MONTHS_PER_YEAR
+        search_curve: List[Dict[str, float]] = []
 
         if verbose:
             logger.info(
@@ -953,13 +1017,19 @@ class RetirementMonteCarloSimulator:
                     f"Search iter {search_iteration}: Testing {months} m "
                     f"({months / MONTHS_PER_YEAR:.1f} yrs) with {sim_count} sims."
                 )
-            summary_df, _, _, _ = self.run_monte_carlo_simulations(months, sim_count)
+            summary_df, _, _, _, _, _ = self.run_monte_carlo_simulations(months, sim_count)
             prob = self._success_probability(summary_df)
             if verbose:
                 logger.info(
                     f"  Search iter {search_iteration}: Prob for {months} m: "
                     f"{prob:.2f}% (Target: {target_probability_pct:.2f}%)"
                 )
+            point = {
+                "working_months": months,
+                "working_years": round(months / MONTHS_PER_YEAR, 1),
+                "probability": round(prob, 2),
+            }
+            search_curve.append(point)
             if progress_callback:
                 progress_callback(
                     {
@@ -986,7 +1056,7 @@ class RetirementMonteCarloSimulator:
         if prob_at_lo >= target_probability_pct:
             if verbose:
                 logger.info(f"  Target met at starting point {current} months.")
-            return current, prob_at_lo
+            return current, prob_at_lo, search_curve
 
         while current < max_total_months:
             # Grow step while far from target
@@ -1033,7 +1103,7 @@ class RetirementMonteCarloSimulator:
                 logger.warning(
                     f"Highest probability achieved: {highest_prob_if_target_not_met:.2f}%."
                 )
-            return -1, highest_prob_if_target_not_met
+            return -1, highest_prob_if_target_not_met, search_curve
 
         # --- Phase 2: Bisect [lo, hi], track smallest month count that met target ---
         best = hi
@@ -1052,4 +1122,4 @@ class RetirementMonteCarloSimulator:
                 f"  Search complete: minimum {best} months "
                 f"({best / MONTHS_PER_YEAR:.1f} yrs) with prob {best_prob:.2f}%."
             )
-        return best, best_prob
+        return best, best_prob, search_curve

@@ -64,6 +64,26 @@ class WithdrawalRateData(BaseModel):
     percentiles: Dict[str, List[Optional[float]]]
 
 
+class SearchCurvePoint(BaseModel):
+    working_months: int
+    working_years: float
+    probability: float
+
+
+class SearchCurveData(BaseModel):
+    points: List[SearchCurvePoint]
+    target_probability: float
+    selected_working_months: int
+
+
+class RuinHistogramData(BaseModel):
+    """Years into retirement until portfolio depletion (failed paths only)."""
+
+    years_to_ruin: List[float]
+    failure_count: int
+    total_paths: int
+
+
 class HistogramData(BaseModel):
     final_balances: List[float]
     start_balances: List[float]
@@ -78,7 +98,10 @@ class SimulationResponse(BaseModel):
     scenario: str
     summary: SimulationSummary
     trajectory: Optional[TrajectoryData] = None
+    trajectory_real: Optional[TrajectoryData] = None
     withdrawal_rate: Optional[WithdrawalRateData] = None
+    search_curve: Optional[SearchCurveData] = None
+    ruin_histogram: Optional[RuinHistogramData] = None
     histogram: HistogramData
     reference_lines: List[ReferenceLineData] = []
 
@@ -165,12 +188,41 @@ def _safe_float(value: float) -> Optional[float]:
     return round(value, 2)
 
 
+def _dedupe_search_curve(points: List[dict]) -> List[dict]:
+    """Keep latest probability for each working_months, sorted ascending."""
+    by_months: Dict[int, dict] = {}
+    for p in points:
+        by_months[int(p["working_months"])] = p
+    return [by_months[m] for m in sorted(by_months)]
+
+
+def _traj_payload(traj_pct_df, sample_paths) -> Optional[dict]:
+    if traj_pct_df is None or traj_pct_df.empty:
+        return None
+    years = list(range(len(traj_pct_df)))
+    pct_dict: Dict[str, List[float]] = {}
+    for col in traj_pct_df.columns:
+        pct_dict[f"p{int(col * 100)}"] = [
+            round(float(v), 2) for v in traj_pct_df[col]
+        ]
+    return {
+        "years": years,
+        "percentiles": pct_dict,
+        "sample_paths": (
+            [[round(float(v), 2) for v in path] for path in sample_paths]
+            if sample_paths
+            else []
+        ),
+    }
+
+
 def _run_simulation(
     config: Config,
     working_months_override: Optional[int] = None,
 ) -> dict:
     """Heavy, synchronous work -- called via ``asyncio.to_thread``."""
     simulator = RetirementMonteCarloSimulator(config)
+    search_curve: List[dict] = []
 
     if working_months_override is not None:
         required_w_months = working_months_override
@@ -180,8 +232,8 @@ def _run_simulation(
         )
     else:
         logger.info(f"Searching for minimum working months for '{config.Nickname}'")
-        required_w_months, achieved_prob = simulator.find_minimum_working_months(
-            verbose=True,
+        required_w_months, achieved_prob, search_curve = (
+            simulator.find_minimum_working_months(verbose=True)
         )
         if required_w_months == -1:
             raise ValueError(
@@ -195,7 +247,9 @@ def _run_simulation(
     )
 
     simulator.use_final_seeds()
-    return _build_result(config, simulator, required_w_months)
+    return _build_result(
+        config, simulator, required_w_months, search_curve=search_curve
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +328,7 @@ async def simulate_stream(body: SimulationRequest):
 
                 if body.working_months_override is not None:
                     required_w_months = body.working_months_override
+                    search_curve: List[dict] = []
                     _emit({
                         "type": "phase",
                         "phase": "final_sim",
@@ -285,7 +340,7 @@ async def simulate_stream(body: SimulationRequest):
                         "phase": "search",
                         "message": "Searching for minimum working months\u2026",
                     })
-                    required_w_months, achieved_prob = (
+                    required_w_months, achieved_prob, search_curve = (
                         simulator.find_minimum_working_months(
                             verbose=True,
                             progress_callback=_emit,
@@ -318,7 +373,10 @@ async def simulate_stream(body: SimulationRequest):
 
                 simulator.use_final_seeds()
                 result = _build_result(
-                    config, simulator, required_w_months,
+                    config,
+                    simulator,
+                    required_w_months,
+                    search_curve=search_curve,
                 )
                 _emit({"type": "result", "data": result})
 
@@ -342,13 +400,19 @@ def _build_result(
     config: Config,
     simulator: RetirementMonteCarloSimulator,
     required_w_months: int,
+    search_curve: Optional[List[dict]] = None,
 ) -> dict:
     """Run final simulation and assemble the response dict."""
-    summary_df, traj_pct_df, sample_trajectories, wr_pct_df = (
-        simulator.run_monte_carlo_simulations(
-            working_months=required_w_months,
-            num_simulations=config.num_simulations_main,
-        )
+    (
+        summary_df,
+        traj_pct_df,
+        sample_trajectories,
+        wr_pct_df,
+        real_traj_pct_df,
+        sample_real_trajectories,
+    ) = simulator.run_monte_carlo_simulations(
+        working_months=required_w_months,
+        num_simulations=config.num_simulations_main,
     )
 
     if summary_df.empty:
@@ -378,23 +442,8 @@ def _build_result(
         for k, v in pct_raw.items()
     }
 
-    trajectory_data = None
-    if traj_pct_df is not None and not traj_pct_df.empty:
-        years = list(range(len(traj_pct_df)))
-        pct_dict: Dict[str, List[float]] = {}
-        for col in traj_pct_df.columns:
-            pct_dict[f"p{int(col * 100)}"] = [
-                round(float(v), 2) for v in traj_pct_df[col]
-            ]
-        trajectory_data = {
-            "years": years,
-            "percentiles": pct_dict,
-            "sample_paths": (
-                [[round(float(v), 2) for v in path] for path in sample_trajectories]
-                if sample_trajectories
-                else []
-            ),
-        }
+    trajectory_data = _traj_payload(traj_pct_df, sample_trajectories)
+    trajectory_real_data = _traj_payload(real_traj_pct_df, sample_real_trajectories)
 
     # Align reference line with trajectory year-grid index (ceil months/12).
     retirement_year_index = float(trajectory_retirement_year_index(required_w_months))
@@ -406,7 +455,6 @@ def _build_result(
         pay_age = stream_payment_start_age(
             config.current_age, required_w_months, stream.start_at_age
         )
-        # Place the line on the chart's year axis (years from T=0).
         start_yr = round(years_from_t0_to_age(config.current_age, pay_age), 1)
         reference_lines.append({
             "name": stream.name,
@@ -432,6 +480,23 @@ def _build_result(
             "percentiles": wr_pct_dict,
         }
 
+    search_curve_data = None
+    if search_curve:
+        search_curve_data = {
+            "points": _dedupe_search_curve(search_curve),
+            "target_probability": config.target_probability,
+            "selected_working_months": required_w_months,
+        }
+
+    ruin_histogram = None
+    if "YearsToRuin" in summary_df.columns:
+        failed = summary_df.loc[~successful_mask, "YearsToRuin"].dropna()
+        ruin_histogram = {
+            "years_to_ruin": [round(float(v), 1) for v in failed],
+            "failure_count": int(len(failed)),
+            "total_paths": int(len(summary_df)),
+        }
+
     return {
         "scenario": config.Nickname,
         "summary": {
@@ -446,7 +511,10 @@ def _build_result(
             "final_balance_percentiles": balance_percentiles,
         },
         "trajectory": trajectory_data,
+        "trajectory_real": trajectory_real_data,
         "withdrawal_rate": withdrawal_rate_data,
+        "search_curve": search_curve_data,
+        "ruin_histogram": ruin_histogram,
         "histogram": {
             "final_balances": [
                 round(float(v), 2) for v in summary_df["Final Balance"]

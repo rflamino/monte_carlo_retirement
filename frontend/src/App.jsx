@@ -3,6 +3,8 @@ import ConfigEditor from './components/ConfigEditor'
 import SummaryCard from './components/SummaryCard'
 import TrajectoryChart from './components/TrajectoryChart'
 import WithdrawalRateChart from './components/WithdrawalRateChart'
+import SearchCurveChart from './components/SearchCurveChart'
+import RuinHistogramChart from './components/RuinHistogramChart'
 import HistogramChart from './components/HistogramChart'
 import SimulationProgress from './components/SimulationProgress'
 import { runSimulationStream } from './api'
@@ -63,6 +65,13 @@ export default function App() {
     }
   }, [])
 
+  const refLines =
+    results?.reference_lines?.length
+      ? results.reference_lines
+      : results?.summary?.required_working_years != null
+        ? [{ name: 'Retirement Starts', year: results.summary.required_working_years }]
+        : []
+
   return (
     <div className="app-layout">
       <aside className="sidebar">
@@ -105,17 +114,15 @@ export default function App() {
               {elapsed && <span className="elapsed">Completed in {elapsed}s</span>}
             </div>
             <SummaryCard summary={results.summary} />
+            {results.search_curve && (
+              <SearchCurveChart theme={theme} searchCurve={results.search_curve} />
+            )}
             {results.trajectory && (
               <TrajectoryChart
                 theme={theme}
                 trajectory={results.trajectory}
-                referenceLines={
-                  results.reference_lines?.length
-                    ? results.reference_lines
-                    : results.summary?.required_working_years != null
-                      ? [{ name: 'Retirement Starts', year: results.summary.required_working_years }]
-                      : []
-                }
+                trajectoryReal={results.trajectory_real}
+                referenceLines={refLines}
               />
             )}
             {results.withdrawal_rate && (
@@ -124,6 +131,9 @@ export default function App() {
                 withdrawalRate={results.withdrawal_rate}
                 referenceLines={results.reference_lines || []}
               />
+            )}
+            {results.ruin_histogram && (
+              <RuinHistogramChart theme={theme} ruinHistogram={results.ruin_histogram} />
             )}
             <HistogramChart
               theme={theme}

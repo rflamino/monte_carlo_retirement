@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   ComposedChart,
   Area,
@@ -128,13 +129,21 @@ function RefMarkerLabel({ viewBox, marker, fill }) {
   )
 }
 
-export default function TrajectoryChart({ trajectory, referenceLines = [], theme = 'light' }) {
-  if (!trajectory) return null
+export default function TrajectoryChart({
+  trajectory,
+  trajectoryReal = null,
+  referenceLines = [],
+  theme = 'light',
+}) {
+  const [mode, setMode] = useState('nominal') // 'nominal' | 'real'
+  const active =
+    mode === 'real' && trajectoryReal ? trajectoryReal : trajectory
+  if (!active) return null
 
-  const data = buildChartData(trajectory)
+  const data = buildChartData(active)
   const maxYear = data.at(-1)?.year ?? 0
-  const sampleKeys = trajectory.sample_paths
-    ? trajectory.sample_paths.map((_, i) => `s${i}`)
+  const sampleKeys = active.sample_paths
+    ? active.sample_paths.map((_, i) => `s${i}`)
     : []
 
   const grid = cssVar('--chart-grid', '#e2e8f0')
@@ -146,6 +155,7 @@ export default function TrajectoryChart({ trajectory, referenceLines = [], theme
   const refDefault = cssVar('--chart-ref', '#0f172a')
   const refColors = theme === 'dark' ? REF_LINE_COLORS_DARK : REF_LINE_COLORS_LIGHT
   const markers = prepareReferenceMarkers(referenceLines, maxYear, refColors, refDefault)
+  const isReal = mode === 'real' && trajectoryReal
 
   // Flatten for the chip legend (one chip per original event, shared color if clustered)
   const legendChips = markers.flatMap((m) =>
@@ -157,7 +167,32 @@ export default function TrajectoryChart({ trajectory, referenceLines = [], theme
 
   return (
     <div className="card chart-card trajectory-chart-card">
-      <h3>Portfolio Trajectories</h3>
+      <div className="chart-title-row">
+        <h3>Portfolio Trajectories</h3>
+        {trajectoryReal && (
+          <div className="chart-mode-toggle" role="group" aria-label="Balance units">
+            <button
+              type="button"
+              className={mode === 'nominal' ? 'active' : ''}
+              onClick={() => setMode('nominal')}
+            >
+              Nominal
+            </button>
+            <button
+              type="button"
+              className={mode === 'real' ? 'active' : ''}
+              onClick={() => setMode('real')}
+            >
+              Real (today&apos;s $)
+            </button>
+          </div>
+        )}
+      </div>
+      <p className="chart-subtitle">
+        {isReal
+          ? 'Inflation-adjusted balances in today’s purchasing power.'
+          : 'Nominal dollar balances (not adjusted for inflation).'}
+      </p>
       {legendChips.length > 0 && (
         <ul className="traj-ref-legend" aria-label="Timeline markers">
           {legendChips.map((chip, i) => (
@@ -191,7 +226,7 @@ export default function TrajectoryChart({ trajectory, referenceLines = [], theme
             tickFormatter={(v) => `$${v.toFixed(0)}M`}
             tick={{ fontSize: 11, fill: tick }}
             label={{
-              value: 'Balance ($M)',
+              value: isReal ? 'Real balance ($M today)' : 'Balance ($M)',
               angle: -90,
               position: 'insideLeft',
               offset: 0,

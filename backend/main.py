@@ -70,8 +70,8 @@ def main():
     logger.info(
         f"--- Starting Search for Minimum Working Months for '{config.Nickname}' ---"
     )
-    required_w_months, achieved_prob_search = simulator.find_minimum_working_months(
-        verbose=True
+    required_w_months, achieved_prob_search, _search_curve = (
+        simulator.find_minimum_working_months(verbose=True)
     )
 
     if required_w_months == -1:
@@ -96,6 +96,8 @@ def main():
         final_summary_df,
         final_trajectory_percentiles_df,
         final_sample_trajectories,
+        _,
+        _,
         _,
     ) = simulator.run_monte_carlo_simulations(
         working_months=required_w_months,

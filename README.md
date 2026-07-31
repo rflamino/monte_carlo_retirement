@@ -159,8 +159,11 @@ Interactive docs: `http://localhost:8080/docs`.
 | Field | Content |
 | :---- | :------ |
 | `summary` | Working months/years, **retirement age**, success probability, first-year withdrawal rate, median balances, percentiles (P1–P99) |
-| `trajectory` | Year-indexed percentiles (P5–P95) and sample paths |
+| `trajectory` | Year-indexed nominal percentiles (P5–P95) and sample paths |
+| `trajectory_real` | Same structure in today’s purchasing power (÷ cumulative inflation) |
 | `withdrawal_rate` | Real annual withdrawal rate (% of start-of-retirement balance, inflation-adjusted) percentiles by year from T=0 |
+| `search_curve` | Search probes `{ points, target_probability, selected_working_months }` |
+| `ruin_histogram` | `years_to_ruin` for failed paths, plus failure/total counts |
 | `histogram` | `final_balances` / `start_balances` for client binning |
 | `reference_lines` | `{ name, year }` markers (retirement start, income streams); years are from T=0 on the trajectory grid |
 
@@ -285,8 +288,10 @@ List of objects. Example:
 
 * **Config editor** — Form sections with tips, Load/Save/Reset, Form ↔ JSON, dark mode toggle.
 * **Summary card** — Working period, retirement age, success %, target, first-year withdrawal rate, median balances, percentiles.
-* **Portfolio trajectories** — Percentile bands, median, sample paths; numbered reference markers with a chip legend (retirement, income streams).
+* **Success vs working period** — Search curve of success probability by months saved (target + selected minimum).
+* **Portfolio trajectories** — Percentile bands, median, sample paths; toggle **Nominal** vs **Real (today’s $)**; numbered reference markers.
 * **Withdrawal rate over time** — Inflation-adjusted portfolio withdrawal as % of the balance at retirement start (Trinity/Bengen basis), with a **4% reference line**. Constant-real spending is flat; the series falls when pensions or other income begin.
+* **Years to ruin** — Among failed paths, when (years into retirement) the portfolio could no longer fund spending.
 * **Final balance histogram** — Outcome distribution with median line.
 * **Live progress** — Search iterations and probability vs target.
 

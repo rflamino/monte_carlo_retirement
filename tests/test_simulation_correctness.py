@@ -70,7 +70,7 @@ def test_success_probability_non_decreasing_in_working_months():
 
     probs = []
     for months in range(0, 61, 6):
-        summary, _, _, _ = sim.run_monte_carlo_simulations(months, 80)
+        summary, _, _, _, _, _ = sim.run_monte_carlo_simulations(months, 80)
         probs.append(sim._success_probability(summary))
 
     for i in range(1, len(probs)):
@@ -156,7 +156,7 @@ def test_withdrawal_rate_with_zero_inflation():
     )
     sim = RetirementMonteCarloSimulator(config)
     sim.use_final_seeds()
-    summary, _, _, _ = sim.run_monte_carlo_simulations(working_months=0, num_simulations=20)
+    summary, _, _, _, _, _ = sim.run_monte_carlo_simulations(working_months=0, num_simulations=20)
 
     annual = monthly_expenses * MONTHS_PER_YEAR
     expected_rate = (annual / initial) * 100.0
@@ -196,12 +196,14 @@ def test_bisection_finds_true_minimum():
                 "Inflation At Retirement": [1.0] * num_simulations,
             }
         )
-        return df, None, None, None
+        return df, None, None, None, None, None
 
     sim.run_monte_carlo_simulations = fake_run  # type: ignore[method-assign]
-    months, prob = sim.find_minimum_working_months(verbose=False)
+    months, prob, curve = sim.find_minimum_working_months(verbose=False)
     assert months == threshold, f"expected {threshold}, got {months}"
     assert prob >= 90.0
+    assert len(curve) >= 1
+    assert all("working_months" in p and "probability" in p for p in curve)
 
 
 def test_income_stream_starts_at_age():
@@ -312,7 +314,7 @@ def test_pension_covers_after_portfolio_depleted():
 
     # Summary success probability uses Success, not Final Balance > 0
     sim.use_final_seeds()
-    summary, _, _, _ = sim.run_monte_carlo_simulations(0, 5)
+    summary, _, _, _, _, _ = sim.run_monte_carlo_simulations(0, 5)
     assert sim._success_probability(summary) == pytest.approx(100.0)
     assert (summary["Final Balance"] <= SMALL_EPSILON).all()
 
@@ -347,7 +349,7 @@ def test_withdrawal_rate_trajectory_matches_first_year():
     # Flat expenses, zero inflation → constant real rate each year
     assert wr[1] == pytest.approx(wr[0], abs=1e-6)
 
-    summary, _, _, wr_pct = sim.run_monte_carlo_simulations(0, 10)
+    summary, _, _, wr_pct, _, _ = sim.run_monte_carlo_simulations(0, 10)
     assert wr_pct is not None and not wr_pct.empty
     assert abs(wr_pct.iloc[0][0.50] - expected) < 0.5
     swr = median_first_year_withdrawal_rate(summary)
@@ -383,4 +385,38 @@ def test_real_withdrawal_rate_flat_with_deterministic_inflation():
     for rate in wr:
         assert rate == pytest.approx(wr[0], abs=1e-4)
     assert wr[0] == pytest.approx(5.0, abs=0.05)
+
+
+def test_years_to_ruin_and_real_trajectory():
+    """Failed paths report years-to-ruin; real traj ≈ nominal when inflation is 0."""
+    config = _base_config(
+        initial_balance=5_000.0,
+        monthly_contribution=0.0,
+        monthly_expenses=2_000.0,
+        retirement_years=10,
+        inflation_rate_mean=0.0,
+        inflation_rate_volatility=0.0,
+        inv1_returns_mean=0.0,
+        inv1_returns_volatility=0.0,
+        inv2_premium_over_inflation_mean=0.0,
+        inv2_premium_over_inflation_volatility=0.0,
+        inv1_use_realized_gains_tax_system=False,
+        inv1_annual_tax_on_gains_rate=0.0,
+        inv2_use_realized_gains_tax_system=False,
+        inv2_annual_tax_on_gains_rate=0.0,
+        seed=9,
+    )
+    sim = RetirementMonteCarloSimulator(config)
+    result = sim._run_single_simulation_path(working_months=0, path_seed=1)
+    assert result["Success"] is False
+    assert result["YearsToRuin"] >= 1
+    assert len(result["RealTrajectory"]) == len(result["Trajectory"])
+    for nom, real in zip(result["Trajectory"], result["RealTrajectory"]):
+        assert real == pytest.approx(nom, abs=1e-6)
+
+    summary, traj, _, _, real_traj, _ = sim.run_monte_carlo_simulations(0, 20)
+    assert (summary["Success"] == False).all()
+    assert summary["YearsToRuin"].notna().all()
+    assert real_traj is not None and traj is not None
+    assert len(real_traj) == len(traj)
 

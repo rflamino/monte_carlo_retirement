@@ -1064,6 +1064,47 @@ body {
   gap: 10px;
 }
 
+.chart-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.chart-title-row h3 {
+  margin: 0;
+}
+
+.chart-mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-muted);
+}
+
+.chart-mode-toggle button {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.chart-mode-toggle button.active {
+  background: var(--accent, #2563eb);
+  color: #fff;
+}
+
+.chart-mode-toggle button:not(.active):hover {
+  color: var(--text-primary);
+  background: var(--border);
+}
+
 .traj-ref-legend {
   display: flex;
   flex-wrap: wrap;
