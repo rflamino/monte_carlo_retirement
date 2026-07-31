@@ -22,7 +22,10 @@ from constants import MONTHS_PER_YEAR, SMALL_EPSILON
 from simulation import (
     RetirementMonteCarloSimulator,
     median_first_year_withdrawal_rate,
+    retirement_age,
+    stream_payment_start_age,
     trajectory_retirement_year_index,
+    years_from_t0_to_age,
 )
 
 
@@ -33,6 +36,7 @@ from simulation import (
 class SimulationSummary(BaseModel):
     required_working_months: int
     required_working_years: float
+    retirement_age: Optional[float] = None
     success_probability: float
     target_probability: float
     median_start_balance: float
@@ -339,10 +343,17 @@ def _build_result(
     if summary_df.empty:
         raise ValueError(f"Simulation for '{config.Nickname}' yielded no results.")
 
-    success_prob = (summary_df["Final Balance"] > SMALL_EPSILON).mean() * 100.0
-    successful = summary_df.loc[
-        summary_df["Final Balance"] > SMALL_EPSILON, "Final Balance"
-    ]
+    success_prob = (
+        summary_df["Success"].astype(bool).mean() * 100.0
+        if "Success" in summary_df.columns
+        else (summary_df["Final Balance"] > SMALL_EPSILON).mean() * 100.0
+    )
+    successful_mask = (
+        summary_df["Success"].astype(bool)
+        if "Success" in summary_df.columns
+        else summary_df["Final Balance"] > SMALL_EPSILON
+    )
+    successful = summary_df.loc[successful_mask, "Final Balance"]
     median_final = float(successful.median()) if not successful.empty else 0.0
     median_start = float(summary_df["Start Balance"].median())
 
@@ -377,12 +388,15 @@ def _build_result(
     # Align reference line with trajectory year-grid index (ceil months/12).
     retirement_year_index = float(trajectory_retirement_year_index(required_w_months))
     required_working_years = round(required_w_months / MONTHS_PER_YEAR, 1)
+    ret_age = retirement_age(config.current_age, required_w_months)
     reference_lines = []
     reference_lines.append({"name": "Retirement Starts", "year": retirement_year_index})
     for stream in (config.other_income_streams or []):
-        start_yr = round(
-            retirement_year_index + stream.start_after_retirement_years, 1
+        pay_age = stream_payment_start_age(
+            config.current_age, required_w_months, stream.start_at_age
         )
+        # Place the line on the chart's year axis (years from T=0).
+        start_yr = round(years_from_t0_to_age(config.current_age, pay_age), 1)
         reference_lines.append({
             "name": stream.name,
             "year": start_yr,
@@ -393,6 +407,7 @@ def _build_result(
         "summary": {
             "required_working_months": required_w_months,
             "required_working_years": required_working_years,
+            "retirement_age": round(ret_age, 1),
             "success_probability": round(float(success_prob), 2),
             "target_probability": config.target_probability,
             "median_start_balance": round(median_start, 2),

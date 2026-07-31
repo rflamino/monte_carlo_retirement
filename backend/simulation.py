@@ -28,6 +28,33 @@ def arithmetic_to_log_params(mean: float, vol: float) -> Tuple[float, float]:
     return mu_log, sigma_log
 
 
+def retirement_age(current_age: float, working_months: int) -> float:
+    """Age at the start of retirement given age at T=0 and months worked."""
+    return current_age + working_months / MONTHS_PER_YEAR
+
+
+def stream_payment_start_age(
+    current_age: float, working_months: int, start_at_age: float
+) -> float:
+    """
+    Age when income payments actually begin during the retirement phase.
+    Eligible from start_at_age, but only paid after retirement starts.
+    """
+    return max(retirement_age(current_age, working_months), float(start_at_age))
+
+
+def age_at_retirement_year(
+    current_age: float, working_months: int, year_num: int
+) -> float:
+    """Age at the start of retirement year ``year_num`` (0 = first retirement year)."""
+    return retirement_age(current_age, working_months) + year_num
+
+
+def years_from_t0_to_age(current_age: float, target_age: float) -> float:
+    """Years from simulation start until reaching ``target_age`` (may be 0 if already past)."""
+    return max(0.0, float(target_age) - float(current_age))
+
+
 def median_first_year_withdrawal_rate(summary_df: pd.DataFrame) -> float:
     """
     Median per-path first-year gross withdrawal / start-of-retirement balance.
@@ -292,8 +319,8 @@ class RetirementMonteCarloSimulator:
         """
         Runs a single simulation path for a given number of working months and seed.
 
-        Returns a dict with Start Balance, Final Balance, First Year Gross Withdrawal,
-        Trajectory, and (for tests) Inflation At Retirement.
+        Returns a dict with Start Balance, Final Balance, Success (funded all spending),
+        First Year Gross Withdrawal, Trajectory, and Inflation At Retirement.
         """
         p = self.params_model
         total_months = working_months + p.retirement_years * MONTHS_PER_YEAR
@@ -424,9 +451,13 @@ class RetirementMonteCarloSimulator:
         path_specific_other_income_streams_details = []
         for income_config in p.other_income_streams:
             stream_detail = income_config.model_copy(deep=True)
-            year_income_starts_abs_sim_idx = (
-                num_working_years + income_config.start_after_retirement_years
+            pay_start_age = stream_payment_start_age(
+                p.current_age, working_months, income_config.start_at_age
             )
+            stream_detail._payment_start_age = pay_start_age
+            # Map payment-start age to the nearest year-grid inflation index.
+            years_to_start = years_from_t0_to_age(p.current_age, pay_start_age)
+            year_income_starts_abs_sim_idx = int(math.floor(years_to_start + SMALL_EPSILON))
             if year_income_starts_abs_sim_idx < len(yearly_master_inflation_factors):
                 stream_detail._master_inflation_at_start = (
                     yearly_master_inflation_factors[year_income_starts_abs_sim_idx]
@@ -442,18 +473,18 @@ class RetirementMonteCarloSimulator:
             path_specific_other_income_streams_details.append(stream_detail)
 
         first_year_gross_withdrawal = 0.0
+        # True iff every retirement year funded spending (portfolio and/or other income).
+        # A $0 portfolio is allowed when net other income covers expenses.
+        path_succeeded = True
 
         # --- DECUMULATION (RETIREMENT) PHASE ---
         for year_num in range(p.retirement_years):
-            if (
-                balance_inv1 + balance_inv2 <= SMALL_EPSILON
-                and p.monthly_expenses > SMALL_EPSILON
-            ):
-                break
-
             # Price expenses/income at the START of the retirement year.
             price_level_at_year_start = master_cumulative_inflation
             yearly_master_inflation_factors.append(price_level_at_year_start)
+            age_this_year = age_at_retirement_year(
+                p.current_age, working_months, year_num
+            )
 
             # Update any deferred non-indexed stream start factors.
             for stream_detail in path_specific_other_income_streams_details:
@@ -461,17 +492,9 @@ class RetirementMonteCarloSimulator:
                     not stream_detail.inflation_indexed
                     and stream_detail._master_inflation_at_start is None
                 ):
-                    year_income_starts_abs_sim_idx = (
-                        num_working_years + stream_detail.start_after_retirement_years
-                    )
-                    if year_income_starts_abs_sim_idx < len(
-                        yearly_master_inflation_factors
-                    ):
-                        stream_detail._master_inflation_at_start = (
-                            yearly_master_inflation_factors[
-                                year_income_starts_abs_sim_idx
-                            ]
-                        )
+                    pay_start = stream_detail._payment_start_age
+                    if pay_start is not None and age_this_year + SMALL_EPSILON >= pay_start:
+                        stream_detail._master_inflation_at_start = price_level_at_year_start
                         stream_detail._nominal_fixed_monthly_amount = (
                             stream_detail.monthly_amount_today
                             * stream_detail._master_inflation_at_start
@@ -483,14 +506,18 @@ class RetirementMonteCarloSimulator:
 
             net_other_annual_income = 0.0
             for income_stream_details in path_specific_other_income_streams_details:
-                if year_num >= income_stream_details.start_after_retirement_years:
+                pay_start = income_stream_details._payment_start_age
+                if pay_start is None:
+                    pay_start = stream_payment_start_age(
+                        p.current_age,
+                        working_months,
+                        income_stream_details.start_at_age,
+                    )
+                if age_this_year + SMALL_EPSILON >= pay_start:
+                    years_receiving = age_this_year - pay_start
                     if (
                         income_stream_details.duration_years is None
-                        or (
-                            year_num
-                            - income_stream_details.start_after_retirement_years
-                        )
-                        < income_stream_details.duration_years
+                        or years_receiving < income_stream_details.duration_years
                     ):
                         if income_stream_details.inflation_indexed:
                             current_nominal_monthly_val = (
@@ -523,12 +550,21 @@ class RetirementMonteCarloSimulator:
             )
             monthly_withdrawal_needed = required_annual_withdrawal / MONTHS_PER_YEAR
 
+            # Empty portfolio is fine when income covers spending; fail only if cash needed.
+            if (
+                balance_inv1 + balance_inv2 <= SMALL_EPSILON
+                and monthly_withdrawal_needed > SMALL_EPSILON
+            ):
+                path_succeeded = False
+                break
+
             bal_inv1_start_tax_year_ret, bal_inv2_start_tax_year_ret = (
                 balance_inv1,
                 balance_inv2,
             )
             total_gross_withdraw_inv1_this_year = 0.0
             total_gross_withdraw_inv2_this_year = 0.0
+            year_funding_failed = False
 
             for _month_in_ret_year_idx in range(MONTHS_PER_YEAR):
                 total_balance_before_month = balance_inv1 + balance_inv2
@@ -536,6 +572,7 @@ class RetirementMonteCarloSimulator:
                     total_balance_before_month <= SMALL_EPSILON
                     and monthly_withdrawal_needed > SMALL_EPSILON
                 ):
+                    year_funding_failed = True
                     break
 
                 z_eq, z_inf, z_prem = shocks[min(shock_idx, len(shocks) - 1)]
@@ -563,6 +600,7 @@ class RetirementMonteCarloSimulator:
                 ):
                     balance_inv1 = max(0, balance_inv1)
                     balance_inv2 = max(0, balance_inv2)
+                    year_funding_failed = True
                     break
 
                 actual_monthly_withdrawal_target = min(
@@ -571,6 +609,12 @@ class RetirementMonteCarloSimulator:
                 actual_monthly_withdrawal_target = max(
                     0, actual_monthly_withdrawal_target
                 )
+                if (
+                    monthly_withdrawal_needed > SMALL_EPSILON
+                    and actual_monthly_withdrawal_target
+                    < monthly_withdrawal_needed - SMALL_EPSILON
+                ):
+                    year_funding_failed = True
 
                 prop1 = (
                     balance_inv1 / total_after_growth
@@ -616,14 +660,13 @@ class RetirementMonteCarloSimulator:
                     )
                 )
 
-                total_balance_after_withdrawal_and_rebalance = (
-                    balance_inv1 + balance_inv2
-                )
-                if (
-                    total_balance_after_withdrawal_and_rebalance < SMALL_EPSILON
-                    and monthly_withdrawal_needed > SMALL_EPSILON
-                ):
+                if year_funding_failed:
                     break
+
+            if year_funding_failed:
+                path_succeeded = False
+                yearly_trajectory.append(max(0.0, balance_inv1 + balance_inv2))
+                break
 
             if year_num == 0:
                 first_year_gross_withdrawal = (
@@ -659,12 +702,7 @@ class RetirementMonteCarloSimulator:
             total_balance_after_annual_tax = balance_inv1 + balance_inv2
             yearly_trajectory.append(total_balance_after_annual_tax)
 
-            if (
-                total_balance_after_annual_tax <= SMALL_EPSILON
-                and required_annual_withdrawal > SMALL_EPSILON
-            ):
-                break
-
+            # Keep going with a $0 portfolio when income covers future spending.
             if total_balance_after_annual_tax > SMALL_EPSILON:
                 balance_inv1 = total_balance_after_annual_tax * p.allocation_inv1_pct
                 balance_inv2 = total_balance_after_annual_tax * p.allocation_inv2_pct
@@ -680,7 +718,11 @@ class RetirementMonteCarloSimulator:
         current_len = len(yearly_trajectory)
 
         if current_len < expected_len:
-            padding_value = yearly_trajectory[-1] if yearly_trajectory else 0.0
+            padding_value = (
+                0.0
+                if not path_succeeded
+                else (yearly_trajectory[-1] if yearly_trajectory else 0.0)
+            )
             yearly_trajectory.extend([padding_value] * (expected_len - current_len))
         elif current_len > expected_len:
             yearly_trajectory = yearly_trajectory[:expected_len]
@@ -688,6 +730,7 @@ class RetirementMonteCarloSimulator:
         return {
             "Start Balance": balance_at_retirement_start,
             "Final Balance": max(0, final_total_balance),
+            "Success": bool(path_succeeded),
             "First Year Gross Withdrawal": first_year_gross_withdrawal,
             "Trajectory": yearly_trajectory,
             "Inflation At Retirement": inflation_at_retirement,
@@ -745,6 +788,7 @@ class RetirementMonteCarloSimulator:
             {
                 "Start Balance": r["Start Balance"],
                 "Final Balance": r["Final Balance"],
+                "Success": bool(r.get("Success", r["Final Balance"] > SMALL_EPSILON)),
                 "First Year Gross Withdrawal": r["First Year Gross Withdrawal"],
                 "Inflation At Retirement": r.get("Inflation At Retirement", 1.0),
             }
@@ -799,8 +843,11 @@ class RetirementMonteCarloSimulator:
         return summary_df, trajectory_percentiles_df, sample_trajectories_list
 
     def _success_probability(self, summary_df: pd.DataFrame) -> float:
+        """Share of paths that funded all retirement spending (may end at $0)."""
         if summary_df.empty:
             return 0.0
+        if "Success" in summary_df.columns:
+            return float(summary_df["Success"].astype(bool).mean() * 100.0)
         return float((summary_df["Final Balance"] > SMALL_EPSILON).mean() * 100.0)
 
     def find_minimum_working_months(

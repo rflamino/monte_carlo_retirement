@@ -27,6 +27,10 @@ export default function SummaryCard({ summary }) {
           value={`${s.required_working_months} mo (${s.required_working_years} yr)`}
         />
         <Metric
+          label="Retirement Age"
+          value={s.retirement_age != null ? `${s.retirement_age}` : '—'}
+        />
+        <Metric
           label="Success Probability"
           value={`${s.success_probability}%`}
           accent={probColor}

@@ -16,7 +16,11 @@ from constants import (
     TEXT_OUTPUT_COLOR,
     MONTHS_PER_YEAR,
 )
-from simulation import trajectory_retirement_year_index
+from simulation import (
+    stream_payment_start_age,
+    trajectory_retirement_year_index,
+    years_from_t0_to_age,
+)
 
 
 def plot_simulation_results(
@@ -28,15 +32,22 @@ def plot_simulation_results(
     plt.figure(figsize=(12, 7.5))  # Adjusted for better aspect ratio if text is inside
     ax = plt.gca()
 
-    successful_outcomes = results_df[results_df["Final Balance"] > SMALL_EPSILON]
+    if "Success" in results_df.columns:
+        successful_outcomes = results_df[results_df["Success"].astype(bool)]
+    else:
+        successful_outcomes = results_df[results_df["Final Balance"] > SMALL_EPSILON]
     success_rate_display = (
         (len(successful_outcomes) / len(results_df) * 100)
         if len(results_df) > 0
         else 0.0
     )
 
+    # Histogram of ending balances among successes (drop exact zeros for readability).
     balances_in_millions = (
-        successful_outcomes["Final Balance"] / 1e6
+        successful_outcomes.loc[
+            successful_outcomes["Final Balance"] > SMALL_EPSILON, "Final Balance"
+        ]
+        / 1e6
         if not successful_outcomes.empty
         else pd.Series(dtype=float)
     )
@@ -47,7 +58,7 @@ def plot_simulation_results(
             bins=100,
             edgecolor="black",
             alpha=0.7,
-            label=f"Successful Outcomes ({success_rate_display:.1f}%) (Final Bal > 0)",
+            label=f"Successful Outcomes ({success_rate_display:.1f}%)",
         )
     else:
         logger.info(f"No successful outcomes to plot in histogram for {filename}.")
@@ -86,7 +97,7 @@ def plot_simulation_results(
                     else ""
                 )
                 input_lines.append(
-                    f" {stream.name[:10]}: ${stream.monthly_amount_today:,.0f}/mo, from ret.yr {stream.start_after_retirement_years + 1}{duration_str}, {stream.tax_rate * 100:.0f}%Tax"
+                    f" {stream.name[:10]}: ${stream.monthly_amount_today:,.0f}/mo, from age {stream.start_at_age:g}{duration_str}, {stream.tax_rate * 100:.0f}%Tax"
                 )
 
     output_lines = [
@@ -333,16 +344,17 @@ def plot_portfolio_trajectories(
         line_styles = ["-", "--", "-.", ":"]
         colors = ["green", "purple", "brown", "cyan", "magenta", "olive"]
         for i, stream in enumerate(input_config.other_income_streams):
-            if not hasattr(stream, "name") or not hasattr(
-                stream, "start_after_retirement_years"
-            ):
+            if not hasattr(stream, "name") or not hasattr(stream, "start_at_age"):
                 logger.warning(
-                    f"Income stream at index {i} is missing 'name' or 'start_after_retirement_years' attribute. Skipping."
+                    f"Income stream at index {i} is missing 'name' or 'start_at_age' attribute. Skipping."
                 )
                 continue
 
-            stream_start_sim_year = (
-                working_years_float + stream.start_after_retirement_years
+            pay_age = stream_payment_start_age(
+                input_config.current_age, working_months, stream.start_at_age
+            )
+            stream_start_sim_year = years_from_t0_to_age(
+                input_config.current_age, pay_age
             )
 
             if len(years_x_axis) > 0 and 0 <= stream_start_sim_year <= max_years_plot:
@@ -351,7 +363,7 @@ def plot_portfolio_trajectories(
                     color=colors[i % len(colors)],
                     linestyle=line_styles[i % len(line_styles)],
                     linewidth=1.0,
-                    label=f"{stream.name} Starts (yr {stream_start_sim_year:.1f})",
+                    label=f"{stream.name} Starts (age {pay_age:.0f}, yr {stream_start_sim_year:.1f})",
                 )
             elif len(years_x_axis) > 0 and stream_start_sim_year > max_years_plot:
                 logger.warning(

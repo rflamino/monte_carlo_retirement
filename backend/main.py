@@ -104,10 +104,17 @@ def main():
         return
 
     final_success_prob_pct = (
-        final_summary_df["Final Balance"] > SMALL_EPSILON
-    ).mean() * 100.0
+        final_summary_df["Success"].astype(bool).mean() * 100.0
+        if "Success" in final_summary_df.columns
+        else (final_summary_df["Final Balance"] > SMALL_EPSILON).mean() * 100.0
+    )
+    successful_mask = (
+        final_summary_df["Success"].astype(bool)
+        if "Success" in final_summary_df.columns
+        else final_summary_df["Final Balance"] > SMALL_EPSILON
+    )
     successful_final_balances = final_summary_df.loc[
-        final_summary_df["Final Balance"] > SMALL_EPSILON, "Final Balance"
+        successful_mask, "Final Balance"
     ]
     median_final_bal_successful = (
         successful_final_balances.median()

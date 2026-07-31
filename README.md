@@ -137,6 +137,7 @@ The simulation is controlled entirely by the JSON configuration file. Below is a
 | Key | Type | Description |
 | :--- | :--- | :--- |
 | `scenario` | String | A nickname for this simulation run (e.g., "Conservative"). Used in plots and logs. |
+| `current_age` | Float | Age at simulation start (today). Used with income-stream `start_at_age`. |
 | `retirement_years` | Integer | The duration of retirement to simulate in years (e.g., 50). |
 | `target_probability` | Float | The target success rate percentage (e.g., 99.0 for 99%). |
 
@@ -207,13 +208,15 @@ Inflation is also lognormal. The cumulative price level accrues **monthly** as `
 
 A list of objects defining extra income (Social Security, Rental, etc.).
 
+Retirement age is `current_age + working_months / 12`. Payments begin at **`max(retirement_age, start_at_age)`** (income is only paid during the retirement phase). Duration is counted from that payment-start age.
+
 | Key | Type | Description |
 | :--- | :--- | :--- |
 | `name` | String | Label for the income. |
 | `monthly_amount_today` | Float | Monthly value in today's money. |
-| `start_after_retirement_years` | Integer | Years after retirement starts that income begins. |
-| `duration_years` | Integer/Null | How long it lasts. `null` = indefinitely. |
-| `inflation_indexed` | Boolean | `true`: Grows with inflation. `false`: Fixed nominal value. |
+| `start_at_age` | Float | Age when this income becomes eligible (e.g., 65 for a state pension). |
+| `duration_years` | Integer/Null | How long payments last after they begin. `null` = indefinitely. |
+| `inflation_indexed` | Boolean | `true`: Grows with inflation. `false`: Fixed nominal value at payment start. |
 | `tax_rate` | Float | Income tax applied to this stream. |
 
 -----
@@ -232,7 +235,7 @@ After a successful run, the CLI generates:
 
 The React frontend displays interactive versions of the same charts, plus:
 
-* **Summary card** — Working months, success probability, first-year withdrawal rate (median gross withdrawal / start-of-retirement balance), median balances, final balance percentiles.
+* **Summary card** — Working months, retirement age, success probability, first-year withdrawal rate (median gross withdrawal / start-of-retirement balance), median balances, final balance percentiles.
 * **Portfolio trajectories** — Percentile bands (P5–P95, P25–P75), median line, sample paths, and vertical reference lines for retirement start and other income streams (State Pension, Rental Income, etc.).
 * **Final balance histogram** — Distribution of outcomes with median reference line.
 * **Live progress** — During simulation, shows search iterations, achieved probability vs target, and phase (search vs final run).

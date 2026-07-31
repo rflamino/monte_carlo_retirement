@@ -10,6 +10,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
 } from 'recharts'
+import { cssVar } from '../theme'
 
 function buildChartData(trajectory) {
   const { years, percentiles, sample_paths } = trajectory
@@ -50,67 +51,153 @@ function CustomTooltip({ active, payload }) {
   return (
     <div className="chart-tooltip">
       <p className="tooltip-title">Year {d.year}</p>
-      <p style={{ color: '#ef4444' }}>P95: ${d._p95?.toFixed(2)}M</p>
-      <p style={{ color: '#3b82f6' }}>P75: ${d._p75?.toFixed(2)}M</p>
-      <p style={{ color: '#1d4ed8', fontWeight: 600 }}>Median: ${d._p50?.toFixed(2)}M</p>
-      <p style={{ color: '#3b82f6' }}>P25: ${d._p25?.toFixed(2)}M</p>
-      <p style={{ color: '#ef4444' }}>P5: ${d._p5?.toFixed(2)}M</p>
+      <p style={{ color: cssVar('--chart-p95', '#ef4444') }}>P95: ${d._p95?.toFixed(2)}M</p>
+      <p style={{ color: cssVar('--chart-p75', '#3b82f6') }}>P75: ${d._p75?.toFixed(2)}M</p>
+      <p style={{ color: cssVar('--chart-p50', '#1d4ed8'), fontWeight: 600 }}>
+        Median: ${d._p50?.toFixed(2)}M
+      </p>
+      <p style={{ color: cssVar('--chart-p75', '#3b82f6') }}>P25: ${d._p25?.toFixed(2)}M</p>
+      <p style={{ color: cssVar('--chart-p95', '#ef4444') }}>P5: ${d._p5?.toFixed(2)}M</p>
     </div>
   )
 }
 
-const REF_LINE_COLORS = [
-  '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5',
+const REF_LINE_COLORS_LIGHT = [
+  '#15803d', '#7c3aed', '#c2410c', '#0e7490', '#be123c', '#4338ca',
+]
+const REF_LINE_COLORS_DARK = [
+  '#4ade80', '#c4b5fd', '#fb923c', '#22d3ee', '#fb7185', '#a5b4fc',
 ]
 
-const YEAR_NEAR_THRESHOLD = 0.6
+/** Merge events that land within this many years so one line serves them. */
+const YEAR_NEAR_THRESHOLD = 1.25
 
-function groupReferenceLinesByYear(lines) {
+function prepareReferenceMarkers(lines, maxYear, refColors, retirementColor) {
+  const visible = [...lines]
+    .filter((rl) => rl.year > 0 && rl.year < maxYear)
+    .sort((a, b) => a.year - b.year)
+
   const groups = []
-  const sorted = [...lines].sort((a, b) => a.year - b.year)
-  for (const rl of sorted) {
+  for (const rl of visible) {
     const existing = groups.find((g) => Math.abs(g.year - rl.year) < YEAR_NEAR_THRESHOLD)
     if (existing) {
-      existing.names.push(rl.name)
+      existing.items.push(rl)
+      // Keep mean year so a cluster sits between nearby events
+      const n = existing.items.length
+      existing.year = existing.items.reduce((s, x) => s + x.year, 0) / n
     } else {
-      groups.push({ year: rl.year, names: [rl.name] })
+      groups.push({ year: rl.year, items: [rl] })
     }
   }
-  return groups.map((g) => ({
-    year: Math.round(g.year * 10) / 10,
-    label: g.names.length > 1 ? `${g.names.join(', ')} (yr ${g.year.toFixed(1)})` : `${g.names[0]} (yr ${g.year.toFixed(1)})`,
-    isRetirement: g.names.some((n) => n === 'Retirement Starts'),
-    index: groups.indexOf(g),
-  }))
+
+  return groups.map((g, i) => {
+    const isRetirement = g.items.some((x) => x.name === 'Retirement Starts')
+    const stroke = isRetirement ? retirementColor : refColors[i % refColors.length]
+    const yearLabel = Math.round(g.year * 10) / 10
+    return {
+      year: yearLabel,
+      stroke,
+      isRetirement,
+      marker: String(i + 1),
+      items: g.items.map((x) => ({
+        name: x.name,
+        year: Math.round(x.year * 10) / 10,
+        stroke,
+      })),
+    }
+  })
 }
 
-export default function TrajectoryChart({ trajectory, referenceLines = [] }) {
+/** Short numeric badge on the line — full names live in the legend chips. */
+function RefMarkerLabel({ viewBox, marker, fill }) {
+  const x = viewBox?.x ?? 0
+  const y = viewBox?.y ?? 0
+  return (
+    <g transform={`translate(${x}, ${y - 8})`}>
+      <circle r={9} fill={fill} opacity={0.95} />
+      <text
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill="#fff"
+        fontSize={10}
+        fontWeight={700}
+      >
+        {marker}
+      </text>
+    </g>
+  )
+}
+
+export default function TrajectoryChart({ trajectory, referenceLines = [], theme = 'light' }) {
   if (!trajectory) return null
 
   const data = buildChartData(trajectory)
   const maxYear = data.at(-1)?.year ?? 0
-  const groupedLines = groupReferenceLinesByYear(referenceLines)
   const sampleKeys = trajectory.sample_paths
     ? trajectory.sample_paths.map((_, i) => `s${i}`)
     : []
 
+  const grid = cssVar('--chart-grid', '#e2e8f0')
+  const tick = cssVar('--chart-tick', '#64748b')
+  const median = cssVar('--chart-median', '#2563eb')
+  const bandOuter = cssVar('--chart-band-outer', '#fca5a5')
+  const bandInner = cssVar('--chart-band-inner', '#93c5fd')
+  const sample = cssVar('--chart-sample', '#9ca3af')
+  const refDefault = cssVar('--chart-ref', '#0f172a')
+  const refColors = theme === 'dark' ? REF_LINE_COLORS_DARK : REF_LINE_COLORS_LIGHT
+  const markers = prepareReferenceMarkers(referenceLines, maxYear, refColors, refDefault)
+
+  // Flatten for the chip legend (one chip per original event, shared color if clustered)
+  const legendChips = markers.flatMap((m) =>
+    m.items.map((item) => ({
+      ...item,
+      marker: m.marker,
+    }))
+  )
+
   return (
     <div className="card chart-card trajectory-chart-card">
       <h3>Portfolio Trajectories</h3>
+      {legendChips.length > 0 && (
+        <ul className="traj-ref-legend" aria-label="Timeline markers">
+          {legendChips.map((chip, i) => (
+            <li key={`${chip.name}-${chip.year}-${i}`} className="traj-ref-chip">
+              <span className="traj-ref-badge" style={{ background: chip.stroke }}>
+                {chip.marker}
+              </span>
+              <span className="traj-ref-name">{chip.name}</span>
+              <span className="traj-ref-year">yr {chip.year}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <ResponsiveContainer width="100%" height={420}>
-        <ComposedChart data={data} margin={{ top: 32, right: 24, bottom: 48, left: 24 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+        <ComposedChart data={data} margin={{ top: 20, right: 24, bottom: 48, left: 24 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={grid} />
           <XAxis
             dataKey="year"
             type="number"
             domain={[0, maxYear]}
-            label={{ value: 'Years from Start', position: 'insideBottom', offset: -8, fontSize: 12 }}
-            tick={{ fontSize: 11 }}
+            label={{
+              value: 'Years from Start',
+              position: 'insideBottom',
+              offset: -8,
+              fontSize: 12,
+              fill: tick,
+            }}
+            tick={{ fontSize: 11, fill: tick }}
           />
           <YAxis
             tickFormatter={(v) => `$${v.toFixed(0)}M`}
-            tick={{ fontSize: 11 }}
-            label={{ value: 'Balance ($M)', angle: -90, position: 'insideLeft', offset: 0, fontSize: 12 }}
+            tick={{ fontSize: 11, fill: tick }}
+            label={{
+              value: 'Balance ($M)',
+              angle: -90,
+              position: 'insideLeft',
+              offset: 0,
+              fontSize: 12,
+              fill: tick,
+            }}
           />
           <Tooltip content={<CustomTooltip />} />
 
@@ -129,8 +216,8 @@ export default function TrajectoryChart({ trajectory, referenceLines = [] }) {
             type="monotone"
             dataKey="lower_band"
             stroke="none"
-            fill="#fca5a5"
-            fillOpacity={0.3}
+            fill={bandOuter}
+            fillOpacity={theme === 'dark' ? 0.25 : 0.3}
             activeDot={false}
             name="P5–P25 / P75–P95"
           />
@@ -139,8 +226,8 @@ export default function TrajectoryChart({ trajectory, referenceLines = [] }) {
             type="monotone"
             dataKey="inner_band"
             stroke="none"
-            fill="#93c5fd"
-            fillOpacity={0.35}
+            fill={bandInner}
+            fillOpacity={theme === 'dark' ? 0.3 : 0.35}
             activeDot={false}
             name="P25–P75"
           />
@@ -149,8 +236,8 @@ export default function TrajectoryChart({ trajectory, referenceLines = [] }) {
             type="monotone"
             dataKey="upper_band"
             stroke="none"
-            fill="#fca5a5"
-            fillOpacity={0.3}
+            fill={bandOuter}
+            fillOpacity={theme === 'dark' ? 0.25 : 0.3}
             activeDot={false}
             legendType="none"
           />
@@ -160,7 +247,7 @@ export default function TrajectoryChart({ trajectory, referenceLines = [] }) {
               key={key}
               type="monotone"
               dataKey={key}
-              stroke="#9ca3af"
+              stroke={sample}
               strokeWidth={0.7}
               dot={false}
               activeDot={false}
@@ -172,35 +259,26 @@ export default function TrajectoryChart({ trajectory, referenceLines = [] }) {
           <Line
             type="monotone"
             dataKey="median"
-            stroke="#2563eb"
+            stroke={median}
             strokeWidth={2.5}
             dot={false}
             name="Median (P50)"
           />
 
-          {groupedLines.map((g, i) => {
-            if (g.year <= 0 || g.year >= maxYear) return null
-            const stroke = g.isRetirement ? '#0f172a' : REF_LINE_COLORS[i % REF_LINE_COLORS.length]
-            return (
-              <ReferenceLine
-                key={`ref-${g.year}-${i}`}
-                x={g.year}
-                stroke={stroke}
-                strokeDasharray={g.isRetirement ? '6 3' : '4 2'}
-                strokeWidth={1.5}
-                ifOverflow="extendDomain"
-                label={{
-                  value: g.label,
-                  position: 'top',
-                  fontSize: 10,
-                  fill: stroke,
-                }}
-              />
-            )
-          })}
+          {markers.map((m) => (
+            <ReferenceLine
+              key={`ref-${m.marker}-${m.year}`}
+              x={m.year}
+              stroke={m.stroke}
+              strokeDasharray={m.isRetirement ? '6 3' : '4 2'}
+              strokeWidth={1.5}
+              ifOverflow="extendDomain"
+              label={<RefMarkerLabel marker={m.marker} fill={m.stroke} />}
+            />
+          ))}
 
           <Legend
-            wrapperStyle={{ fontSize: 11, paddingTop: 20, paddingBottom: 4 }}
+            wrapperStyle={{ fontSize: 11, paddingTop: 20, paddingBottom: 4, color: tick }}
             layout="horizontal"
             align="center"
             verticalAlign="bottom"

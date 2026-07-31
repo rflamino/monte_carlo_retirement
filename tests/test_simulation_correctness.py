@@ -23,6 +23,7 @@ def _base_config(**overrides) -> Config:
         "monthly_contribution": 0.0,
         "contribution_growth_rate_annual": 0.0,
         "monthly_expenses": 2_000.0,
+        "current_age": 40.0,
         "retirement_years": 10,
         "allocation_inv1_pct": 0.6,
         "inv1_returns_mean": 0.08,
@@ -185,10 +186,12 @@ def test_bisection_finds_true_minimum():
 
         # Success iff working_months >= threshold
         bal = 1.0 if working_months >= threshold else 0.0
+        ok = working_months >= threshold
         df = pd.DataFrame(
             {
                 "Start Balance": [100.0] * num_simulations,
                 "Final Balance": [bal] * num_simulations,
+                "Success": [ok] * num_simulations,
                 "First Year Gross Withdrawal": [1.0] * num_simulations,
                 "Inflation At Retirement": [1.0] * num_simulations,
             }
@@ -199,3 +202,117 @@ def test_bisection_finds_true_minimum():
     months, prob = sim.find_minimum_working_months(verbose=False)
     assert months == threshold, f"expected {threshold}, got {months}"
     assert prob >= 90.0
+
+
+def test_income_stream_starts_at_age():
+    """Pension at start_at_age begins at max(retirement_age, start_at_age)."""
+    from simulation import (
+        age_at_retirement_year,
+        retirement_age,
+        stream_payment_start_age,
+    )
+
+    current_age = 40.0
+    working_months = 240  # 20 years → retire at 60
+    assert retirement_age(current_age, working_months) == pytest.approx(60.0)
+    # Eligible at 65 → payments start at 65 (5 years into retirement)
+    assert stream_payment_start_age(current_age, working_months, 65.0) == pytest.approx(65.0)
+    assert age_at_retirement_year(current_age, working_months, 5) == pytest.approx(65.0)
+    # Eligible at 55 but retire at 60 → payments start at retirement
+    assert stream_payment_start_age(current_age, working_months, 55.0) == pytest.approx(60.0)
+
+    # Path-level: zero returns/inflation, expenses covered only by pension after age 65
+    config = _base_config(
+        current_age=40.0,
+        initial_balance=0.0,
+        monthly_contribution=0.0,
+        monthly_expenses=1000.0,
+        retirement_years=10,
+        inflation_rate_mean=0.0,
+        inflation_rate_volatility=0.0,
+        inv1_returns_mean=0.0,
+        inv1_returns_volatility=0.0,
+        inv2_premium_over_inflation_mean=0.0,
+        inv2_premium_over_inflation_volatility=0.0,
+        inv1_use_realized_gains_tax_system=False,
+        inv1_annual_tax_on_gains_rate=0.0,
+        inv2_use_realized_gains_tax_system=False,
+        inv2_annual_tax_on_gains_rate=0.0,
+        other_income_streams=[
+            {
+                "name": "Pension",
+                "monthly_amount_today": 1000.0,
+                "start_at_age": 65.0,
+                "duration_years": None,
+                "inflation_indexed": True,
+                "tax_rate": 0.0,
+            }
+        ],
+        seed=1,
+        num_simulations_main=5,
+    )
+    # Fund enough to cover expenses for years 60–65 before pension starts
+    config = config.model_copy(update={"initial_balance": 80_000.0})
+    sim = RetirementMonteCarloSimulator(config)
+    result = sim._run_single_simulation_path(working_months=240, path_seed=1)
+    # Pension covers expenses from age 65 onward → survive with remaining principal
+    assert result["Final Balance"] > 0
+
+    # Without pension, same setup should deplete (or end much lower)
+    config_no_pension = config.model_copy(update={"other_income_streams": []})
+    sim2 = RetirementMonteCarloSimulator(config_no_pension)
+    result2 = sim2._run_single_simulation_path(working_months=240, path_seed=1)
+    assert result["Final Balance"] > result2["Final Balance"]
+
+
+def test_pension_covers_after_portfolio_depleted():
+    """
+    Path succeeds when portfolio hits $0 before pension, then pension funds spending.
+    Success is not Final Balance > 0 — living on income alone is allowed.
+    """
+    config = _base_config(
+        current_age=60.0,
+        initial_balance=12_000.0,  # exactly 1 year of $1k/mo expenses
+        monthly_contribution=0.0,
+        monthly_expenses=1_000.0,
+        retirement_years=10,
+        inflation_rate_mean=0.0,
+        inflation_rate_volatility=0.0,
+        inv1_returns_mean=0.0,
+        inv1_returns_volatility=0.0,
+        inv2_premium_over_inflation_mean=0.0,
+        inv2_premium_over_inflation_volatility=0.0,
+        inv1_use_realized_gains_tax_system=False,
+        inv1_annual_tax_on_gains_rate=0.0,
+        inv2_use_realized_gains_tax_system=False,
+        inv2_annual_tax_on_gains_rate=0.0,
+        other_income_streams=[
+            {
+                "name": "Pension",
+                "monthly_amount_today": 1_000.0,
+                "start_at_age": 61.0,  # after first retirement year
+                "duration_years": None,
+                "inflation_indexed": True,
+                "tax_rate": 0.0,
+            }
+        ],
+        seed=1,
+    )
+    sim = RetirementMonteCarloSimulator(config)
+    # Retire immediately (age 60); deplete year 0; pension from age 61
+    result = sim._run_single_simulation_path(working_months=0, path_seed=1)
+    assert result["Success"] is True
+    assert result["Final Balance"] == pytest.approx(0.0, abs=1e-6)
+
+    # Without pension, same depleting portfolio fails
+    config_no = config.model_copy(update={"other_income_streams": []})
+    sim2 = RetirementMonteCarloSimulator(config_no)
+    result2 = sim2._run_single_simulation_path(working_months=0, path_seed=1)
+    assert result2["Success"] is False
+
+    # Summary success probability uses Success, not Final Balance > 0
+    sim.use_final_seeds()
+    summary, _, _ = sim.run_monte_carlo_simulations(0, 5)
+    assert sim._success_probability(summary) == pytest.approx(100.0)
+    assert (summary["Final Balance"] <= SMALL_EPSILON).all()
+
