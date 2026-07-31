@@ -20,13 +20,23 @@ class OtherIncomeStreamConfig(BaseModel):
         ge=0,
         description="Current monthly amount of this income in today's (T=0) real terms.",
     )
-    start_after_retirement_years: int = Field(
-        ..., ge=0, description="Years after retirement starts that this income begins."
+    start_at_age: float = Field(
+        ...,
+        ge=0,
+        le=120,
+        description=(
+            "Age when this income becomes eligible. Payments begin at "
+            "max(retirement_age, start_at_age), where retirement_age = "
+            "current_age + working_months/12."
+        ),
     )
     duration_years: Optional[int] = Field(
         None,
         ge=0,
-        description="How many years this income lasts. None means indefinitely or until end of retirement.",
+        description=(
+            "How many years payments last after they begin "
+            "(from max(retirement_age, start_at_age)). None = indefinitely."
+        ),
     )
     inflation_indexed: bool = Field(
         True,
@@ -37,6 +47,7 @@ class OtherIncomeStreamConfig(BaseModel):
     )
     _nominal_fixed_monthly_amount: Optional[float] = PrivateAttr(default=None)
     _master_inflation_at_start: Optional[float] = PrivateAttr(default=None)
+    _payment_start_age: Optional[float] = PrivateAttr(default=None)
 
 
 class Config(BaseModel):
@@ -52,6 +63,12 @@ class Config(BaseModel):
     contribution_growth_rate_annual: float = Field(0.0, ge=0)
     monthly_expenses: float = Field(
         ..., ge=0, description="Monthly expenses in today's (T=0) real terms."
+    )
+    current_age: float = Field(
+        ...,
+        ge=0,
+        le=120,
+        description="Age at simulation start (T=0). Used with start_at_age on income streams.",
     )
     retirement_years: int = Field(..., gt=0)
 

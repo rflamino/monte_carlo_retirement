@@ -69,28 +69,63 @@ const REF_LINE_COLORS_DARK = [
   '#4ade80', '#c4b5fd', '#fb923c', '#22d3ee', '#fb7185', '#a5b4fc',
 ]
 
-const YEAR_NEAR_THRESHOLD = 0.6
+/** Merge events that land within this many years so one line serves them. */
+const YEAR_NEAR_THRESHOLD = 1.25
 
-function groupReferenceLinesByYear(lines) {
+function prepareReferenceMarkers(lines, maxYear, refColors, retirementColor) {
+  const visible = [...lines]
+    .filter((rl) => rl.year > 0 && rl.year < maxYear)
+    .sort((a, b) => a.year - b.year)
+
   const groups = []
-  const sorted = [...lines].sort((a, b) => a.year - b.year)
-  for (const rl of sorted) {
+  for (const rl of visible) {
     const existing = groups.find((g) => Math.abs(g.year - rl.year) < YEAR_NEAR_THRESHOLD)
     if (existing) {
-      existing.names.push(rl.name)
+      existing.items.push(rl)
+      // Keep mean year so a cluster sits between nearby events
+      const n = existing.items.length
+      existing.year = existing.items.reduce((s, x) => s + x.year, 0) / n
     } else {
-      groups.push({ year: rl.year, names: [rl.name] })
+      groups.push({ year: rl.year, items: [rl] })
     }
   }
-  return groups.map((g) => ({
-    year: Math.round(g.year * 10) / 10,
-    label:
-      g.names.length > 1
-        ? `${g.names.join(', ')} (yr ${g.year.toFixed(1)})`
-        : `${g.names[0]} (yr ${g.year.toFixed(1)})`,
-    isRetirement: g.names.some((n) => n === 'Retirement Starts'),
-    index: groups.indexOf(g),
-  }))
+
+  return groups.map((g, i) => {
+    const isRetirement = g.items.some((x) => x.name === 'Retirement Starts')
+    const stroke = isRetirement ? retirementColor : refColors[i % refColors.length]
+    const yearLabel = Math.round(g.year * 10) / 10
+    return {
+      year: yearLabel,
+      stroke,
+      isRetirement,
+      marker: String(i + 1),
+      items: g.items.map((x) => ({
+        name: x.name,
+        year: Math.round(x.year * 10) / 10,
+        stroke,
+      })),
+    }
+  })
+}
+
+/** Short numeric badge on the line — full names live in the legend chips. */
+function RefMarkerLabel({ viewBox, marker, fill }) {
+  const x = viewBox?.x ?? 0
+  const y = viewBox?.y ?? 0
+  return (
+    <g transform={`translate(${x}, ${y - 8})`}>
+      <circle r={9} fill={fill} opacity={0.95} />
+      <text
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill="#fff"
+        fontSize={10}
+        fontWeight={700}
+      >
+        {marker}
+      </text>
+    </g>
+  )
 }
 
 export default function TrajectoryChart({ trajectory, referenceLines = [], theme = 'light' }) {
@@ -98,7 +133,6 @@ export default function TrajectoryChart({ trajectory, referenceLines = [], theme
 
   const data = buildChartData(trajectory)
   const maxYear = data.at(-1)?.year ?? 0
-  const groupedLines = groupReferenceLinesByYear(referenceLines)
   const sampleKeys = trajectory.sample_paths
     ? trajectory.sample_paths.map((_, i) => `s${i}`)
     : []
@@ -111,12 +145,34 @@ export default function TrajectoryChart({ trajectory, referenceLines = [], theme
   const sample = cssVar('--chart-sample', '#9ca3af')
   const refDefault = cssVar('--chart-ref', '#0f172a')
   const refColors = theme === 'dark' ? REF_LINE_COLORS_DARK : REF_LINE_COLORS_LIGHT
+  const markers = prepareReferenceMarkers(referenceLines, maxYear, refColors, refDefault)
+
+  // Flatten for the chip legend (one chip per original event, shared color if clustered)
+  const legendChips = markers.flatMap((m) =>
+    m.items.map((item) => ({
+      ...item,
+      marker: m.marker,
+    }))
+  )
 
   return (
     <div className="card chart-card trajectory-chart-card">
       <h3>Portfolio Trajectories</h3>
+      {legendChips.length > 0 && (
+        <ul className="traj-ref-legend" aria-label="Timeline markers">
+          {legendChips.map((chip, i) => (
+            <li key={`${chip.name}-${chip.year}-${i}`} className="traj-ref-chip">
+              <span className="traj-ref-badge" style={{ background: chip.stroke }}>
+                {chip.marker}
+              </span>
+              <span className="traj-ref-name">{chip.name}</span>
+              <span className="traj-ref-year">yr {chip.year}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <ResponsiveContainer width="100%" height={420}>
-        <ComposedChart data={data} margin={{ top: 32, right: 24, bottom: 48, left: 24 }}>
+        <ComposedChart data={data} margin={{ top: 20, right: 24, bottom: 48, left: 24 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={grid} />
           <XAxis
             dataKey="year"
@@ -209,26 +265,17 @@ export default function TrajectoryChart({ trajectory, referenceLines = [], theme
             name="Median (P50)"
           />
 
-          {groupedLines.map((g, i) => {
-            if (g.year <= 0 || g.year >= maxYear) return null
-            const stroke = g.isRetirement ? refDefault : refColors[i % refColors.length]
-            return (
-              <ReferenceLine
-                key={`ref-${g.year}-${i}`}
-                x={g.year}
-                stroke={stroke}
-                strokeDasharray={g.isRetirement ? '6 3' : '4 2'}
-                strokeWidth={1.5}
-                ifOverflow="extendDomain"
-                label={{
-                  value: g.label,
-                  position: 'top',
-                  fontSize: 10,
-                  fill: stroke,
-                }}
-              />
-            )
-          })}
+          {markers.map((m) => (
+            <ReferenceLine
+              key={`ref-${m.marker}-${m.year}`}
+              x={m.year}
+              stroke={m.stroke}
+              strokeDasharray={m.isRetirement ? '6 3' : '4 2'}
+              strokeWidth={1.5}
+              ifOverflow="extendDomain"
+              label={<RefMarkerLabel marker={m.marker} fill={m.stroke} />}
+            />
+          ))}
 
           <Legend
             wrapperStyle={{ fontSize: 11, paddingTop: 20, paddingBottom: 4, color: tick }}

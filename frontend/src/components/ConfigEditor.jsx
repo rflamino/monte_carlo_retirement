@@ -5,7 +5,7 @@ import { getDefaultConfig } from '../api'
 const EMPTY_STREAM = {
   name: '',
   monthly_amount_today: 0,
-  start_after_retirement_years: 0,
+  start_at_age: 65,
   duration_years: null,
   inflation_indexed: true,
   tax_rate: 0,
@@ -516,6 +516,18 @@ export default function ConfigEditor({ onSimulate, loading }) {
                 />
               </Field>
               <Field
+                label="Current age"
+                tip="Your age at simulation start (today). Retirement age = current age + working years. Income streams use start-at-age against this timeline."
+              >
+                <NumberInput
+                  value={config.current_age}
+                  min={0}
+                  max={120}
+                  step={0.1}
+                  onChange={(v) => update('current_age', v ?? 0)}
+                />
+              </Field>
+              <Field
                 label="Retirement years"
                 tip="How many years of retirement (decumulation) to simulate after you stop working."
               >
@@ -820,22 +832,21 @@ export default function ConfigEditor({ onSimulate, loading }) {
                     />
                   </Field>
                   <Field
-                    label="Starts after"
-                    hint="ret. years"
-                    tip="Years after retirement begins before this income starts (0 = from the first retirement year)."
+                    label="Starts at age"
+                    tip="Age when this income becomes eligible. Payments begin at max(retirement age, start-at-age). Retirement age = current age + working years."
                   >
                     <NumberInput
-                      value={stream.start_after_retirement_years}
+                      value={stream.start_at_age}
                       min={0}
-                      onChange={(v) =>
-                        updateStream(i, 'start_after_retirement_years', v ?? 0)
-                      }
+                      max={120}
+                      step={0.1}
+                      onChange={(v) => updateStream(i, 'start_at_age', v ?? 0)}
                     />
                   </Field>
                   <Field
                     label="Duration"
                     hint="years · blank = forever"
-                    tip="How many years the income lasts after it starts. Leave blank for indefinite (until the end of the simulation)."
+                    tip="How many years payments last after they begin (from max(retirement age, start-at-age)). Leave blank for indefinite."
                   >
                     <NumberInput
                       value={stream.duration_years}

@@ -4,6 +4,7 @@
         "monthly_contribution": 5000.0,
         "contribution_growth_rate_annual": 0.04,
         "monthly_expenses": 10000.0,
+        "current_age": 40.0,
         "retirement_years": 50,
 
         "allocation_inv1_pct": 0.60,
@@ -33,7 +34,7 @@
             {
                 "name": "State Pension",
                 "monthly_amount_today": 4000.0, 
-                "start_after_retirement_years": 25,
+                "start_at_age": 65.0,
                 "duration_years": null, 
                 "inflation_indexed": true,
                 "tax_rate": 0.275
@@ -41,7 +42,7 @@
             {
                 "name": "Rental Income (Apt)",
                 "monthly_amount_today": 0.0,
-                "start_after_retirement_years": 0, 
+                "start_at_age": 40.0,
                 "duration_years": 35,
                 "inflation_indexed": false, 
                 "tax_rate": 0.20

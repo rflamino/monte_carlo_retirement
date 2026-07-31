@@ -34,7 +34,7 @@ def log_input_parameters(config: Config) -> None:
                     )
                     logger.info(
                         f"  - {stream_model.name}: ${stream_model.monthly_amount_today:,.0f}/mo (T=0 real value), "
-                        f"starts after {stream_model.start_after_retirement_years} ret. yrs{duration_str}{inflation_idx_str}, "
+                        f"starts at age {stream_model.start_at_age:g}{duration_str}{inflation_idx_str}, "
                         f"Tax: {stream_model.tax_rate * 100:.0f}%"
                     )
             else:

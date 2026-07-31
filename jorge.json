@@ -1,0 +1,46 @@
+{
+  "scenario": "jorge",
+  "initial_balance": 60000,
+  "monthly_contribution": 9000,
+  "contribution_growth_rate_annual": 0.04,
+  "monthly_expenses": 4000,
+  "current_age": 35,
+  "retirement_years": 40,
+  "allocation_inv1_pct": 0.6,
+  "inv1_returns_mean": 0.12,
+  "inv1_returns_volatility": 0.02,
+  "inv1_annual_tax_on_gains_rate": 0,
+  "inv1_realized_gains_tax_rate": 0.1,
+  "inv1_use_realized_gains_tax_system": true,
+  "inv2_premium_over_inflation_mean": 0.05,
+  "inv2_premium_over_inflation_volatility": 0.02,
+  "inv2_annual_tax_on_gains_rate": 0,
+  "inv2_realized_gains_tax_rate": 0.1,
+  "inv2_use_realized_gains_tax_system": true,
+  "inflation_rate_mean": 0.062,
+  "inflation_rate_volatility": 0.0235,
+  "num_simulations_main": 1000,
+  "num_simulations_search": 100,
+  "target_probability": 98,
+  "starting_working_months_search": 0,
+  "seed": null,
+  "num_processes": 10,
+  "other_income_streams": [
+    {
+      "name": "State Pension",
+      "monthly_amount_today": 8400,
+      "start_at_age": 65,
+      "duration_years": null,
+      "inflation_indexed": true,
+      "tax_rate": 0.275
+    },
+    {
+      "name": "Rental Income (Apt)",
+      "monthly_amount_today": 0,
+      "start_at_age": 40,
+      "duration_years": 35,
+      "inflation_indexed": false,
+      "tax_rate": 0.2
+    }
+  ]
+}
