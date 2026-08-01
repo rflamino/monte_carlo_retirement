@@ -540,7 +540,7 @@ export default function ConfigEditor({ onSimulate, loading }) {
               <Field
                 label="Target success"
                 hint="probability"
-                tip="Target probability of not running out of money. The search finds the minimum working months needed to reach this rate."
+                tip="Target probability of funding all retirement spending. The search estimates the earliest working month that reaches this rate."
               >
                 <PercentInput
                   value={(config.target_probability ?? 0) / 100}
@@ -904,7 +904,7 @@ export default function ConfigEditor({ onSimulate, loading }) {
               </Field>
               <Field
                 label="Search simulations"
-                tip="Paths used at each step while searching for the minimum working months (bracket + bisection)."
+                tip="Paths used at each search probe. More paths reduce noise in the estimated working period."
               >
                 <NumberInput
                   value={config.num_simulations_search}
@@ -956,7 +956,7 @@ export default function ConfigEditor({ onSimulate, loading }) {
         <Field
           label="Working months override"
           hint="leave blank to search"
-          tip="Skip the search and run the final simulation with this many working months. Leave blank to find the minimum months that hit the target success rate."
+          tip="Skip the search and run the final simulation with this exact whole number of working months. Leave blank to estimate the earliest month that hits the target."
         >
           <NumberInput
             value={workingMonths === '' ? null : Number(workingMonths)}

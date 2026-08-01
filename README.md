@@ -1,6 +1,6 @@
 # Retirement Monte Carlo Simulator
 
-A Python Monte Carlo tool that projects portfolio longevity in retirement. It finds the minimum working months needed to hit a target success rate under stochastic returns, inflation, and tax rules.
+A Python Monte Carlo tool that projects portfolio longevity in retirement. It estimates the working months needed to hit a target success rate under stochastic returns, inflation, and tax rules.
 
 Includes a **FastAPI backend** and **React frontend** for interactive simulation and charts, plus a CLI that writes logs and PNG plots.
 
@@ -9,11 +9,11 @@ Includes a **FastAPI backend** and **React frontend** for interactive simulation
 * **Monte Carlo simulation** — Thousands of paths for market volatility and sequence-of-returns risk.
 * **JSON configuration** — Scenarios are fully driven by config files (validated with Pydantic).
 * **Dual-asset portfolio** — Equity (Inv1) + inflation-linked safer asset (Inv2), with rebalancing and tax on sales/gains.
-* **Lognormal returns** — Arithmetic mean/vol in config; converted so \(E[\text{annual gross}] = 1 + \text{mean}\). Optional equity–inflation correlation (Cholesky).
+* **Lognormal returns** — Arithmetic mean/vol in config; converted so \(E[\text{annual gross}] = 1 + \text{mean}\). Optional equity–inflation correlation across the full `[-1, 1]` range.
 * **Monthly inflation accrual** — Price level compounds monthly (no full-year bump on partial years).
 * **Age-based other income** — Pensions, Social Security, rent, etc. via `current_age` + `start_at_age`.
 * **Success = funded spending** — A path succeeds if every retirement year’s expenses are covered by portfolio withdrawals and/or after-tax other income. Ending at \$0 is allowed when income alone covers spending.
-* **Bracket + bisection search** — Finds minimum working months; search and final runs use independent seed streams (no selection bias). Common random numbers across candidates.
+* **Verified bracket search** — Brackets and bisects the transition, then checks every month in the statistically plausible target region to handle locally non-monotone Monte Carlo estimates. Search and final runs use independent seed streams.
 * **Web UI** — Form + JSON config editor, dark mode, field tip balloons, live SSE progress, trajectory bands with numbered timeline markers, final-balance histogram.
 * **REST API** — FastAPI with Swagger at `/docs`.
 * **CLI** — PNG plots and detailed logs.
@@ -93,14 +93,14 @@ uv run pytest tests/ -v
 ### Timeline
 
 1. **Accumulation** — `working_months` of contributions, returns, inflation, and tax.
-2. **Retirement** — `retirement_years` of spending. Net portfolio withdrawal each year =  
+2. **Retirement** — `retirement_years` of spending. Net portfolio withdrawal each month =
    \(\max(0,\ \text{expenses} - \text{after-tax other income})\).
 
 **Retirement age** = `current_age + working_months / 12`.
 
 ### Success definition
 
-A path is **successful** if spending is fully funded in every retirement year (from the portfolio and/or other income). It may end with a \$0 balance if later income (e.g. a pension) covers expenses. Failure means a year where a withdrawal was still needed and the portfolio could not provide it.
+A path is **successful** if every monthly retirement expense is funded (from the portfolio and/or other income). It may end with a \$0 balance if later income (e.g. a pension) covers expenses. Failure occurs on the first month where the after-tax liquidation value of the portfolio cannot provide the remaining cash need.
 
 Reported success probability uses this flag (not “final balance > 0”).
 
@@ -108,7 +108,7 @@ Reported success probability uses this flag (not “final balance > 0”).
 
 Median over paths of  
 `(first-year gross portfolio withdrawal) / (balance at retirement start)`,  
-both nominal at the retirement date. Other income that offsets spending reduces this rate.
+with each withdrawal inflation-adjusted back to retirement-date dollars. This is comparable to the Trinity/Bengen convention. Other income that offsets spending reduces this rate.
 
 ### Other income timing
 
@@ -118,15 +118,18 @@ For each stream, payments begin at:
 \max(\text{retirement age},\ \texttt{start\_at\_age})
 \]
 
-Duration is counted from that payment-start age. Indexed streams track the simulated price level from T=0; non-indexed streams lock a nominal amount at payment start.
+Payments start on the first monthly payment date at or after that age. Duration is counted in months from payment start (`duration_years × 12`). Indexed streams track the simulated monthly price level from T=0; non-indexed streams lock their nominal amount on the first payment date.
 
 **Breaking change:** `start_after_retirement_years` was replaced by `start_at_age`. Old configs must be updated (set `current_age` and each stream’s `start_at_age`).
 
 ### Search algorithm
 
 1. Coarse bracket (stepping working months until target probability is met).
-2. Bisection for the minimum months that still hit the target.
-3. Final detailed run with `num_simulations_main` on an independent seed stream.
+2. Bisection to locate the transition.
+3. Month-by-month verification across the statistically plausible target region, because finite-sample probabilities can dip locally.
+4. Final detailed run with `num_simulations_main` on an independent seed stream.
+
+The selected working period is an **estimate**, not a mathematical guarantee: the independent final run can differ, especially with a small `num_simulations_search`.
 
 -----
 
@@ -158,13 +161,13 @@ Interactive docs: `http://localhost:8080/docs`.
 
 | Field | Content |
 | :---- | :------ |
-| `summary` | Working months/years, **retirement age**, success probability, first-year withdrawal rate, median balances, percentiles (P1–P99) |
-| `trajectory` | Year-indexed nominal percentiles (P5–P95) and sample paths |
+| `summary` | Estimated/overridden working months, **retirement age**, success probability, first-year real withdrawal rate, median balances, percentiles (P1–P99) |
+| `trajectory` | Time-indexed nominal percentiles (P5–P95) and sample paths; partial working years use the exact retirement date |
 | `trajectory_real` | Same structure in today’s purchasing power (÷ cumulative inflation) |
-| `withdrawal_rate` | Real annual withdrawal rate (% of start-of-retirement balance, inflation-adjusted) percentiles by year from T=0 |
+| `withdrawal_rate` | Real annual withdrawal-rate percentiles, observation counts, and total paths. Later years are conditional on paths that funded the complete year |
 | `search_curve` | Search probes `{ points, target_probability, selected_working_months }` |
 | `ruin_histogram` | `years_to_ruin` for failed paths, plus failure/total counts |
-| `histogram` | `final_balances` / `start_balances` for client binning |
+| `histogram` | Aligned `final_balances`, `start_balances`, and `success_flags`; successful $0 outcomes remain in the cohort |
 | `reference_lines` | `{ name, year }` markers (retirement start, income streams); years are from T=0 on the trajectory grid |
 
 ### SSE events (`/api/simulate/stream`)
@@ -225,14 +228,18 @@ Asset 2 weight = `1 - allocation_inv1_pct`.
 * `invX_use_realized_gains_tax_system`: `true`
 * `invX_realized_gains_tax_rate`: rate on gains (e.g. `0.10`)
 
+Average cost basis is preserved through losses, withdrawals, and rebalancing. Withdrawal capacity is evaluated after realized-gain tax, and rebalancing uses net sale proceeds.
+
 **Annual tax on gains** (e.g. come-cotas style):
 
 * `invX_use_realized_gains_tax_system`: `false`
 * `invX_annual_tax_on_gains_rate`: annual rate on gains
 
+Annual tax is calculated from monthly market profit/loss, excluding contributions, withdrawals, and internal rebalancing transfers. Tax periods follow absolute 12-month boundaries across accumulation and retirement; retirement does not reset the tax year. Any final partial period is settled at the simulation horizon.
+
 ### 5. Inflation
 
-Accrues **monthly**. Expenses and income are priced at the **start** of each retirement year.
+Accrues **monthly**. Retirement expenses and indexed income are priced from the simulated price level at the start of each month.
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
@@ -247,7 +254,7 @@ Accrues **monthly**. Expenses and income are priced at the **start** of each ret
 | `num_simulations_main` | Integer | Paths in the final run (e.g. 1000+; 10000+ for production). |
 | `num_simulations_search` | Integer | Paths per search probe (bracket + bisection). Small values make the chosen months noisier vs the final run. |
 | `starting_working_months_search` | Integer | Where the search starts (`0` = today). |
-| `seed` | Integer / `null` | Reproducibility; `null` = random. Search and final use separate streams. |
+| `seed` | Nonnegative integer / `null` | Reproducibility; `null` = random. Search and final use separate streams. |
 | `num_processes` | Integer / `null` | Parallel workers; `null` or `1` = sequential. |
 
 ### 7. Other income streams
@@ -288,7 +295,7 @@ List of objects. Example:
 
 * **Config editor** — Form sections with tips, Load/Save/Reset, Form ↔ JSON, dark mode toggle.
 * **Summary card** — Working period, retirement age, success %, target, first-year withdrawal rate, median balances, percentiles.
-* **Success vs working period** — Search curve of success probability by months saved (target + selected minimum).
+* **Success vs working period** — Search curve of success probability by months saved (target + selected estimate).
 * **Portfolio trajectories** — Percentile bands, median, sample paths; toggle **Nominal** vs **Real (today’s $)**; numbered reference markers.
 * **Withdrawal rate over time** — Inflation-adjusted portfolio withdrawal as % of the balance at retirement start (Trinity/Bengen basis), with a **4% reference line**. Constant-real spending is flat; the series falls when pensions or other income begin.
 * **Years to ruin** — Among failed paths, when (years into retirement) the portfolio could no longer fund spending.

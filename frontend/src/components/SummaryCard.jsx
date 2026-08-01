@@ -23,7 +23,7 @@ export default function SummaryCard({ summary }) {
       <h3>Simulation Summary</h3>
       <div className="metrics-grid">
         <Metric
-          label="Working Period"
+          label={s.working_period_is_estimate ? 'Estimated Working Period' : 'Working Period'}
           value={`${s.required_working_months} mo (${s.required_working_years} yr)`}
         />
         <Metric

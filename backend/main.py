@@ -17,7 +17,7 @@ def main():
     """
     Main execution entry point.
 
-    Loads configuration, runs the simulation search for minimum working months,
+    Loads configuration, estimates the required working months,
     executes the final simulation set, logs results, and generates plots.
     """
     current_timestamp_str = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -68,7 +68,7 @@ def main():
     simulator = RetirementMonteCarloSimulator(config)
 
     logger.info(
-        f"--- Starting Search for Minimum Working Months for '{config.Nickname}' ---"
+        f"--- Estimating Required Working Months for '{config.Nickname}' ---"
     )
     required_w_months, achieved_prob_search, _search_curve = (
         simulator.find_minimum_working_months(verbose=True)
@@ -96,6 +96,7 @@ def main():
         final_summary_df,
         final_trajectory_percentiles_df,
         final_sample_trajectories,
+        _,
         _,
         _,
         _,

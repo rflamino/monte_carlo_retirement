@@ -10,19 +10,28 @@ import {
 } from 'recharts'
 import { cssVar } from '../theme'
 
-function binData(values, numBins = 60) {
-  const positive = values.filter((v) => v > 1)
-  if (positive.length === 0) return { bins: [], median: 0, successRate: 0 }
+function binData(values, successFlags, numBins = 60) {
+  const successful = values.filter((v, i) =>
+    successFlags?.length === values.length ? successFlags[i] : v > 1,
+  )
+  const successfulCount = successful.length
+  const successRate = values.length
+    ? ((successfulCount / values.length) * 100).toFixed(1)
+    : '0.0'
+  if (successfulCount === 0) return { bins: [], median: 0, successRate }
 
-  const sorted = [...positive].sort((a, b) => a - b)
-  const median = sorted[Math.floor(sorted.length / 2)]
+  const sorted = [...successful].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  const median =
+    sorted.length % 2
+      ? sorted[middle]
+      : (sorted[middle - 1] + sorted[middle]) / 2
   const min = sorted[0]
   const max = sorted[sorted.length - 1]
-  const successRate = ((positive.length / values.length) * 100).toFixed(1)
 
   if (max <= min) {
     return {
-      bins: [{ label: `$${(min / 1e6).toFixed(1)}M`, count: positive.length, mid: min / 1e6 }],
+      bins: [{ label: `$${(min / 1e6).toFixed(1)}M`, count: successfulCount, mid: min / 1e6 }],
       median: median / 1e6,
       successRate,
     }
@@ -35,7 +44,7 @@ function binData(values, numBins = 60) {
     count: 0,
   }))
 
-  positive.forEach((v) => {
+  successful.forEach((v) => {
     const idx = Math.min(Math.floor((v - min) / width), numBins - 1)
     bins[idx].count++
   })
@@ -62,10 +71,15 @@ function HistTooltip({ active, payload }) {
   )
 }
 
-export default function HistogramChart({ finalBalances, successProbability, theme = 'light' }) {
+export default function HistogramChart({
+  finalBalances,
+  successFlags,
+  successProbability,
+  theme = 'light',
+}) {
   if (!finalBalances?.length) return null
 
-  const { bins, median, successRate } = binData(finalBalances)
+  const { bins, median, successRate } = binData(finalBalances, successFlags)
   const grid = cssVar('--chart-grid', '#e2e8f0')
   const tick = cssVar('--chart-tick', '#64748b')
   const bar = cssVar('--chart-bar', '#60a5fa')
@@ -75,7 +89,7 @@ export default function HistogramChart({ finalBalances, successProbability, them
     return (
       <div className="card chart-card">
         <h3>Final Balance Distribution</h3>
-        <p className="empty-chart">All simulations resulted in zero balance.</p>
+        <p className="empty-chart">No successful paths to display.</p>
       </div>
     )
   }
@@ -85,7 +99,7 @@ export default function HistogramChart({ finalBalances, successProbability, them
       <h3>
         Final Balance Distribution{' '}
         <span className="chart-subtitle">
-          Success rate: {successProbability ?? successRate}%
+          Successful paths (including $0) · Success rate: {successProbability ?? successRate}%
         </span>
       </h3>
       <ResponsiveContainer width="100%" height={360}>

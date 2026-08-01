@@ -1,7 +1,7 @@
 import os
 import json
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, ValidationInfo
+from pydantic import BaseModel, Field, field_validator, ValidationInfo
 from loguru import logger
 
 
@@ -45,11 +45,6 @@ class OtherIncomeStreamConfig(BaseModel):
     tax_rate: float = Field(
         ..., ge=0.0, le=1.0, description="Tax rate applied to this income stream."
     )
-    _nominal_fixed_monthly_amount: Optional[float] = PrivateAttr(default=None)
-    _master_inflation_at_start: Optional[float] = PrivateAttr(default=None)
-    _payment_start_age: Optional[float] = PrivateAttr(default=None)
-
-
 class Config(BaseModel):
     """Main configuration model for the retirement simulation."""
 
@@ -73,19 +68,19 @@ class Config(BaseModel):
     retirement_years: int = Field(..., gt=0)
 
     allocation_inv1_pct: float = Field(..., ge=0.0, le=1.0)
-    inv1_returns_mean: float = Field(...)
+    inv1_returns_mean: float = Field(..., gt=-1.0)
     inv1_returns_volatility: float = Field(..., ge=0.0)
     inv1_annual_tax_on_gains_rate: float = Field(..., ge=0.0, le=1.0)
     inv1_realized_gains_tax_rate: float = Field(0.0, ge=0.0, le=1.0)
     inv1_use_realized_gains_tax_system: bool = Field(False)
 
-    inv2_premium_over_inflation_mean: float = Field(...)
+    inv2_premium_over_inflation_mean: float = Field(..., gt=-1.0)
     inv2_premium_over_inflation_volatility: float = Field(..., ge=0.0)
     inv2_annual_tax_on_gains_rate: float = Field(..., ge=0.0, le=1.0)
     inv2_realized_gains_tax_rate: float = Field(0.0, ge=0.0, le=1.0)
     inv2_use_realized_gains_tax_system: bool = Field(True)
 
-    inflation_rate_mean: float = Field(...)
+    inflation_rate_mean: float = Field(..., gt=-1.0)
     inflation_rate_volatility: float = Field(..., ge=0.0)
     equity_inflation_correlation: float = Field(
         0.0,
@@ -95,13 +90,13 @@ class Config(BaseModel):
     )
 
     num_simulations_main: int = Field(..., gt=0)
-    num_simulations_search: int = Field(...)
+    num_simulations_search: int = Field(..., gt=0)
     target_probability: float = Field(..., ge=0.0, le=100.0)
     starting_working_months_search: int = Field(..., ge=0)
-    seed: Optional[int] = Field(None)
+    seed: Optional[int] = Field(None, ge=0)
     num_processes: Optional[int] = Field(1, ge=1)
 
-    other_income_streams: List[OtherIncomeStreamConfig] = Field([])
+    other_income_streams: List[OtherIncomeStreamConfig] = Field(default_factory=list)
 
     model_config = {"validate_by_name": True, "validate_assignment": True}
 
@@ -128,7 +123,7 @@ class Config(BaseModel):
 
     @property
     def allocation_inv2_pct(self) -> float:
-        return round(1.0 - self.allocation_inv1_pct, 4)
+        return 1.0 - self.allocation_inv1_pct
 
 
 def load_config_from_json(file_path: str) -> Dict[str, Any]:

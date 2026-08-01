@@ -17,9 +17,8 @@ from constants import (
     MONTHS_PER_YEAR,
 )
 from simulation import (
-    stream_payment_start_age,
-    trajectory_retirement_year_index,
-    years_from_t0_to_age,
+    stream_payment_start_month_index,
+    trajectory_time_points,
 )
 
 
@@ -42,12 +41,10 @@ def plot_simulation_results(
         else 0.0
     )
 
-    # Histogram of ending balances among successes (drop exact zeros for readability).
+    # Use the same successful-path cohort as the summary, including successful
+    # income-only paths that legitimately finish at zero.
     balances_in_millions = (
-        successful_outcomes.loc[
-            successful_outcomes["Final Balance"] > SMALL_EPSILON, "Final Balance"
-        ]
-        / 1e6
+        successful_outcomes["Final Balance"] / 1e6
         if not successful_outcomes.empty
         else pd.Series(dtype=float)
     )
@@ -229,8 +226,18 @@ def plot_portfolio_trajectories(
     plt.figure(figsize=(12, 7))
     ax = plt.gca()
 
-    years_x_axis = np.arange(len(trajectory_percentiles_df))
-    max_years_plot = len(years_x_axis) - 1 if len(years_x_axis) > 0 else 0
+    years_x_axis = np.asarray(
+        trajectory_time_points(working_months, input_config.retirement_years),
+        dtype=float,
+    )
+    if len(years_x_axis) != len(trajectory_percentiles_df):
+        logger.error(
+            "Trajectory time-point count does not match percentile data "
+            f"({len(years_x_axis)} != {len(trajectory_percentiles_df)})."
+        )
+        plt.close()
+        return
+    max_years_plot = float(years_x_axis[-1]) if len(years_x_axis) > 0 else 0.0
 
     if sample_trajectories:
         for i, trajectory in enumerate(sample_trajectories):
@@ -322,7 +329,7 @@ def plot_portfolio_trajectories(
                 f"Columns for percentile band {band['label']} (low: {band['low']}, high: {band['high']}) not found. Skipping band."
             )
 
-    working_years_float = float(trajectory_retirement_year_index(working_months))
+    working_years_float = working_months / MONTHS_PER_YEAR
     if len(years_x_axis) > 0 and 0 <= working_years_float <= max_years_plot:
         ax.axvline(
             x=working_years_float,
@@ -349,12 +356,20 @@ def plot_portfolio_trajectories(
                     f"Income stream at index {i} is missing 'name' or 'start_at_age' attribute. Skipping."
                 )
                 continue
+            if (
+                stream.monthly_amount_today <= SMALL_EPSILON
+                or stream.duration_years == 0
+            ):
+                continue
 
-            pay_age = stream_payment_start_age(
+            payment_start_month = stream_payment_start_month_index(
                 input_config.current_age, working_months, stream.start_at_age
             )
-            stream_start_sim_year = years_from_t0_to_age(
-                input_config.current_age, pay_age
+            stream_start_sim_year = (
+                working_months + payment_start_month
+            ) / MONTHS_PER_YEAR
+            pay_age = (
+                input_config.current_age + stream_start_sim_year
             )
 
             if len(years_x_axis) > 0 and 0 <= stream_start_sim_year <= max_years_plot:

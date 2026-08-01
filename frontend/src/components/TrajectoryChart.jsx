@@ -70,51 +70,34 @@ const REF_LINE_COLORS_DARK = [
   '#4ade80', '#c4b5fd', '#fb923c', '#22d3ee', '#fb7185', '#a5b4fc',
 ]
 
-/** Merge events that land within this many years so one line serves them. */
-const YEAR_NEAR_THRESHOLD = 1.25
-
 function prepareReferenceMarkers(lines, maxYear, refColors, retirementColor) {
   const visible = [...lines]
-    .filter((rl) => rl.year > 0 && rl.year < maxYear)
+    .filter((rl) => rl.year >= 0 && rl.year <= maxYear)
     .sort((a, b) => a.year - b.year)
 
-  const groups = []
-  for (const rl of visible) {
-    const existing = groups.find((g) => Math.abs(g.year - rl.year) < YEAR_NEAR_THRESHOLD)
-    if (existing) {
-      existing.items.push(rl)
-      // Keep mean year so a cluster sits between nearby events
-      const n = existing.items.length
-      existing.year = existing.items.reduce((s, x) => s + x.year, 0) / n
-    } else {
-      groups.push({ year: rl.year, items: [rl] })
-    }
-  }
-
-  return groups.map((g, i) => {
-    const isRetirement = g.items.some((x) => x.name === 'Retirement Starts')
+  return visible.map((rl, i) => {
+    const isRetirement = rl.name === 'Retirement Starts'
     const stroke = isRetirement ? retirementColor : refColors[i % refColors.length]
-    const yearLabel = Math.round(g.year * 10) / 10
     return {
-      year: yearLabel,
+      year: rl.year,
       stroke,
       isRetirement,
       marker: String(i + 1),
-      items: g.items.map((x) => ({
-        name: x.name,
-        year: Math.round(x.year * 10) / 10,
+      items: [{
+        name: rl.name,
+        year: rl.year,
         stroke,
-      })),
+      }],
     }
   })
 }
 
 /** Short numeric badge on the line — full names live in the legend chips. */
-function RefMarkerLabel({ viewBox, marker, fill }) {
+function RefMarkerLabel({ viewBox, marker, fill, lane = 0 }) {
   const x = viewBox?.x ?? 0
   const y = viewBox?.y ?? 0
   return (
-    <g transform={`translate(${x}, ${y - 8})`}>
+    <g transform={`translate(${x}, ${y - 8 - lane * 18})`}>
       <circle r={9} fill={fill} opacity={0.95} />
       <text
         textAnchor="middle"
@@ -201,13 +184,15 @@ export default function TrajectoryChart({
                 {chip.marker}
               </span>
               <span className="traj-ref-name">{chip.name}</span>
-              <span className="traj-ref-year">yr {chip.year}</span>
+              <span className="traj-ref-year">
+                yr {Number(chip.year.toFixed(2))}
+              </span>
             </li>
           ))}
         </ul>
       )}
       <ResponsiveContainer width="100%" height={420}>
-        <ComposedChart data={data} margin={{ top: 20, right: 24, bottom: 48, left: 24 }}>
+        <ComposedChart data={data} margin={{ top: 60, right: 24, bottom: 48, left: 24 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={grid} />
           <XAxis
             dataKey="year"
@@ -300,7 +285,7 @@ export default function TrajectoryChart({
             name="Median (P50)"
           />
 
-          {markers.map((m) => (
+          {markers.map((m, i) => (
             <ReferenceLine
               key={`ref-${m.marker}-${m.year}`}
               x={m.year}
@@ -308,7 +293,13 @@ export default function TrajectoryChart({
               strokeDasharray={m.isRetirement ? '6 3' : '4 2'}
               strokeWidth={1.5}
               ifOverflow="extendDomain"
-              label={<RefMarkerLabel marker={m.marker} fill={m.stroke} />}
+              label={
+                <RefMarkerLabel
+                  marker={m.marker}
+                  fill={m.stroke}
+                  lane={i % 3}
+                />
+              }
             />
           ))}
 

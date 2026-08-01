@@ -138,6 +138,7 @@ export default function App() {
             <HistogramChart
               theme={theme}
               finalBalances={results.histogram.final_balances}
+              successFlags={results.histogram.success_flags}
               successProbability={results.summary.success_probability}
             />
           </div>

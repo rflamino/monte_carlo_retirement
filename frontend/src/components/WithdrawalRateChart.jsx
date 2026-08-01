@@ -20,7 +20,8 @@ const REF_LINE_COLORS_DARK = [
 ]
 
 function buildChartData(withdrawalRate) {
-  const { years, percentiles } = withdrawalRate
+  const { years, percentiles, observation_counts: counts = [], total_paths: total } =
+    withdrawalRate
   const p5 = percentiles.p5 || []
   const p25 = percentiles.p25 || []
   const p50 = percentiles.p50 || []
@@ -48,6 +49,8 @@ function buildChartData(withdrawalRate) {
       _p50: med,
       _p75: midHi,
       _p95: hi,
+      _count: counts[i],
+      _total: total,
     }
   })
 }
@@ -74,6 +77,11 @@ function WrTooltip({ active, payload }) {
       <p style={{ color: cssVar('--chart-p95', '#ef4444') }}>
         P5: {d._p5?.toFixed(2)}%
       </p>
+      {d._count != null && (
+        <p>
+          Full-year paths: {d._count} / {d._total}
+        </p>
+      )}
     </div>
   )
 }
@@ -142,7 +150,8 @@ export default function WithdrawalRateChart({
       <p className="chart-subtitle">
         Inflation-adjusted portfolio withdrawal ÷ balance at retirement start (Trinity /
         Bengen basis). A constant-real draw is flat; the dashed line marks the classic 4%.
-        Rate falls when other income offsets spending.
+        Rate falls when other income offsets spending. Later percentiles are conditional
+        on paths that funded the full displayed year.
       </p>
       {markers.length > 0 && (
         <ul className="traj-ref-legend" aria-label="Timeline markers">
@@ -152,7 +161,9 @@ export default function WithdrawalRateChart({
                 {m.marker}
               </span>
               <span className="traj-ref-name">{m.name}</span>
-              <span className="traj-ref-year">yr {m.year}</span>
+              <span className="traj-ref-year">
+                yr {Number(m.year.toFixed(2))}
+              </span>
             </li>
           ))}
         </ul>

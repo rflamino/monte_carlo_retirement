@@ -13,7 +13,11 @@ export async function runSimulationStream(
 ) {
   const body = { config }
   if (workingMonthsOverride != null && workingMonthsOverride !== '') {
-    body.working_months_override = parseInt(workingMonthsOverride, 10)
+    const override = Number(workingMonthsOverride)
+    if (!Number.isInteger(override) || override < 0) {
+      throw new Error('Working months override must be a nonnegative whole number')
+    }
+    body.working_months_override = override
   }
 
   const res = await fetch(`${API_BASE}/simulate/stream`, {
@@ -27,9 +31,31 @@ export async function runSimulationStream(
     throw new Error(err.detail || 'Simulation failed')
   }
 
+  if (!res.body) throw new Error('Simulation response stream is unavailable')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let receivedTerminalEvent = false
+
+  const handlePart = (part) => {
+    const line = part.replace(/^data: /, '').trim()
+    if (!line) return
+    let event
+    try {
+      event = JSON.parse(line)
+    } catch {
+      throw new Error('Received malformed simulation progress data')
+    }
+    if (event.type === 'result') {
+      receivedTerminalEvent = true
+      onResult(event.data)
+    } else if (event.type === 'error') {
+      receivedTerminalEvent = true
+      onError(event.message)
+    } else {
+      onProgress(event)
+    }
+  }
 
   while (true) {
     const { value, done } = await reader.read()
@@ -40,20 +66,13 @@ export async function runSimulationStream(
     buffer = parts.pop()
 
     for (const part of parts) {
-      const line = part.replace(/^data: /, '').trim()
-      if (!line) continue
-      try {
-        const event = JSON.parse(line)
-        if (event.type === 'result') {
-          onResult(event.data)
-        } else if (event.type === 'error') {
-          onError(event.message)
-        } else {
-          onProgress(event)
-        }
-      } catch {
-        /* ignore malformed chunks */
-      }
+      handlePart(part)
     }
+  }
+
+  buffer += decoder.decode()
+  if (buffer.trim()) handlePart(buffer)
+  if (!receivedTerminalEvent) {
+    throw new Error('Simulation stream ended without a result')
   }
 }

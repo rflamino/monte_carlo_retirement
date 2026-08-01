@@ -23,9 +23,8 @@ from simulation import (
     RetirementMonteCarloSimulator,
     median_first_year_withdrawal_rate,
     retirement_age,
-    stream_payment_start_age,
-    trajectory_retirement_year_index,
-    years_from_t0_to_age,
+    stream_payment_start_month_index,
+    trajectory_time_points,
 )
 
 
@@ -36,6 +35,7 @@ from simulation import (
 class SimulationSummary(BaseModel):
     required_working_months: int
     required_working_years: float
+    working_period_is_estimate: bool = True
     retirement_age: Optional[float] = None
     success_probability: float
     target_probability: float
@@ -43,13 +43,16 @@ class SimulationSummary(BaseModel):
     median_final_balance_successful: float
     swr: Optional[float] = Field(
         None,
-        description="Median first-year withdrawal rate (first-year gross withdrawal / start-of-retirement balance), as a percentage.",
+        description=(
+            "Median first-year real gross withdrawal divided by "
+            "start-of-retirement balance, as a percentage."
+        ),
     )
     final_balance_percentiles: Dict[str, float]
 
 
 class TrajectoryData(BaseModel):
-    years: List[int]
+    years: List[float]
     percentiles: Dict[str, List[float]]
     sample_paths: List[List[float]]
 
@@ -62,6 +65,8 @@ class WithdrawalRateData(BaseModel):
 
     years: List[float]
     percentiles: Dict[str, List[Optional[float]]]
+    observation_counts: List[int]
+    total_paths: int
 
 
 class SearchCurvePoint(BaseModel):
@@ -77,7 +82,7 @@ class SearchCurveData(BaseModel):
 
 
 class RuinHistogramData(BaseModel):
-    """Years into retirement until portfolio depletion (failed paths only)."""
+    """Elapsed retirement years at the first unfunded month (failed paths only)."""
 
     years_to_ruin: List[float]
     failure_count: int
@@ -87,6 +92,7 @@ class RuinHistogramData(BaseModel):
 class HistogramData(BaseModel):
     final_balances: List[float]
     start_balances: List[float]
+    success_flags: List[bool]
 
 
 class ReferenceLineData(BaseModel):
@@ -196,10 +202,16 @@ def _dedupe_search_curve(points: List[dict]) -> List[dict]:
     return [by_months[m] for m in sorted(by_months)]
 
 
-def _traj_payload(traj_pct_df, sample_paths) -> Optional[dict]:
+def _traj_payload(
+    traj_pct_df, sample_paths, years: List[float]
+) -> Optional[dict]:
     if traj_pct_df is None or traj_pct_df.empty:
         return None
-    years = list(range(len(traj_pct_df)))
+    if len(years) != len(traj_pct_df):
+        raise ValueError(
+            "Trajectory time-point count does not match trajectory data "
+            f"({len(years)} != {len(traj_pct_df)})."
+        )
     pct_dict: Dict[str, List[float]] = {}
     for col in traj_pct_df.columns:
         pct_dict[f"p{int(col * 100)}"] = [
@@ -231,7 +243,9 @@ def _run_simulation(
             f"({required_w_months / MONTHS_PER_YEAR:.1f} yrs)"
         )
     else:
-        logger.info(f"Searching for minimum working months for '{config.Nickname}'")
+        logger.info(
+            f"Estimating required working months for '{config.Nickname}'"
+        )
         required_w_months, achieved_prob, search_curve = (
             simulator.find_minimum_working_months(verbose=True)
         )
@@ -338,7 +352,7 @@ async def simulate_stream(body: SimulationRequest):
                     _emit({
                         "type": "phase",
                         "phase": "search",
-                        "message": "Searching for minimum working months\u2026",
+                        "message": "Estimating required working months\u2026",
                     })
                     required_w_months, achieved_prob, search_curve = (
                         simulator.find_minimum_working_months(
@@ -378,7 +392,10 @@ async def simulate_stream(body: SimulationRequest):
                     required_w_months,
                     search_curve=search_curve,
                 )
-                _emit({"type": "result", "data": result})
+                validated_result = SimulationResponse.model_validate(
+                    result
+                ).model_dump(mode="json")
+                _emit({"type": "result", "data": validated_result})
 
             except Exception as exc:
                 _emit({"type": "error", "message": str(exc)})
@@ -391,7 +408,7 @@ async def simulate_stream(body: SimulationRequest):
             event = await queue.get()
             if event is None:
                 break
-            yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps(event, allow_nan=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -410,6 +427,7 @@ def _build_result(
         wr_pct_df,
         real_traj_pct_df,
         sample_real_trajectories,
+        wr_observation_counts,
     ) = simulator.run_monte_carlo_simulations(
         working_months=required_w_months,
         num_simulations=config.num_simulations_main,
@@ -442,20 +460,34 @@ def _build_result(
         for k, v in pct_raw.items()
     }
 
-    trajectory_data = _traj_payload(traj_pct_df, sample_trajectories)
-    trajectory_real_data = _traj_payload(real_traj_pct_df, sample_real_trajectories)
+    trajectory_years = trajectory_time_points(
+        required_w_months, config.retirement_years
+    )
+    trajectory_data = _traj_payload(
+        traj_pct_df, sample_trajectories, trajectory_years
+    )
+    trajectory_real_data = _traj_payload(
+        real_traj_pct_df, sample_real_trajectories, trajectory_years
+    )
 
-    # Align reference line with trajectory year-grid index (ceil months/12).
-    retirement_year_index = float(trajectory_retirement_year_index(required_w_months))
+    retirement_year_index = required_w_months / MONTHS_PER_YEAR
     required_working_years = round(required_w_months / MONTHS_PER_YEAR, 1)
     ret_age = retirement_age(config.current_age, required_w_months)
     reference_lines = []
     reference_lines.append({"name": "Retirement Starts", "year": retirement_year_index})
     for stream in (config.other_income_streams or []):
-        pay_age = stream_payment_start_age(
+        if (
+            stream.monthly_amount_today <= SMALL_EPSILON
+            or stream.duration_years == 0
+        ):
+            continue
+        pay_start_month = stream_payment_start_month_index(
             config.current_age, required_w_months, stream.start_at_age
         )
-        start_yr = round(years_from_t0_to_age(config.current_age, pay_age), 1)
+        start_yr = round(
+            retirement_year_index + pay_start_month / MONTHS_PER_YEAR,
+            3,
+        )
         reference_lines.append({
             "name": stream.name,
             "year": start_yr,
@@ -464,7 +496,7 @@ def _build_result(
     withdrawal_rate_data = None
     if wr_pct_df is not None and not wr_pct_df.empty:
         wr_years = [
-            round(retirement_year_index + i, 1) for i in range(len(wr_pct_df))
+            retirement_year_index + i for i in range(len(wr_pct_df))
         ]
         wr_pct_dict: Dict[str, List[Optional[float]]] = {}
         for col in wr_pct_df.columns:
@@ -478,6 +510,8 @@ def _build_result(
         withdrawal_rate_data = {
             "years": wr_years,
             "percentiles": wr_pct_dict,
+            "observation_counts": wr_observation_counts or [],
+            "total_paths": int(len(summary_df)),
         }
 
     search_curve_data = None
@@ -502,6 +536,7 @@ def _build_result(
         "summary": {
             "required_working_months": required_w_months,
             "required_working_years": required_working_years,
+            "working_period_is_estimate": bool(search_curve),
             "retirement_age": round(ret_age, 1),
             "success_probability": round(float(success_prob), 2),
             "target_probability": config.target_probability,
@@ -521,6 +556,9 @@ def _build_result(
             ],
             "start_balances": [
                 round(float(v), 2) for v in summary_df["Start Balance"]
+            ],
+            "success_flags": [
+                bool(v) for v in summary_df["Success"]
             ],
         },
         "reference_lines": reference_lines,

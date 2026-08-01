@@ -40,14 +40,15 @@ export default function SearchCurveChart({ searchCurve, theme = 'light' }) {
       <h3>Success Probability vs Working Period</h3>
       <p className="chart-subtitle">
         Search probes: how success rate rises with more months of saving. Dashed line is
-        the target; green marks the selected minimum.
+        the target; green marks the selected estimate.
       </p>
       <ResponsiveContainer width="100%" height={320}>
         <LineChart data={data} margin={{ top: 16, right: 24, bottom: 36, left: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={grid} />
           <XAxis
-            dataKey="working_years"
+            dataKey="working_months"
             type="number"
+            tickFormatter={(months) => (months / 12).toFixed(1)}
             label={{
               value: 'Working years',
               position: 'insideBottom',
@@ -92,7 +93,7 @@ export default function SearchCurveChart({ searchCurve, theme = 'light' }) {
             }}
           />
           <ReferenceLine
-            x={Math.round((searchCurve.selected_working_months / 12) * 10) / 10}
+            x={searchCurve.selected_working_months}
             stroke={selectedColor}
             strokeDasharray="4 2"
             strokeWidth={1.5}
